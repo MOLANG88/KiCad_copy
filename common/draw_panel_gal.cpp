@@ -209,6 +209,8 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
         m_drawing( false ),
         m_drawingEnabled( false ),
         m_needIdleRefresh( false ),
+        // Keep the cursor hidden until canvas containment is known.
+        m_cursorInCanvas( false ),
         m_gal( nullptr ),
         m_view( nullptr ),
         m_painter( nullptr ),
@@ -310,6 +312,14 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
     Connect( m_refreshTimer.GetId(), wxEVT_TIMER, wxTimerEventHandler( EDA_DRAW_PANEL_GAL::onRefreshTimer ),
              nullptr, this );
 
+#ifdef __WXMSW__
+    // Poll for leave events missed when switching between top-level windows.
+    m_cursorPollTimer.SetOwner( this );
+    Connect( m_cursorPollTimer.GetId(), wxEVT_TIMER,
+             wxTimerEventHandler( EDA_DRAW_PANEL_GAL::onCursorPollTimer ), nullptr, this );
+    m_cursorPollTimer.Start( 100 );
+#endif
+
     Connect( wxEVT_SHOW, wxShowEventHandler( EDA_DRAW_PANEL_GAL::onShowEvent ), nullptr, this );
 }
 
@@ -324,6 +334,7 @@ EDA_DRAW_PANEL_GAL::~EDA_DRAW_PANEL_GAL()
     // Ensure EDA_DRAW_PANEL_GAL::onShowEvent is not fired during Dtor process
     Disconnect( wxEVT_SHOW, wxShowEventHandler( EDA_DRAW_PANEL_GAL::onShowEvent ) );
     StopDrawing();
+    m_cursorPollTimer.Stop();
 
     wxASSERT( !m_drawing );
 
@@ -343,6 +354,18 @@ void EDA_DRAW_PANEL_GAL::SetFocus()
     KIPLATFORM::UI::ImeNotifyCancelComposition( this );
     wxScrolledCanvas::SetFocus();
     m_lostFocus = false;
+}
+
+
+void EDA_DRAW_PANEL_GAL::SetCursorInCanvas( bool aCursorInCanvas )
+{
+    if( m_cursorInCanvas == aCursorInCanvas )
+        return;
+
+    m_cursorInCanvas = aCursorInCanvas;
+    m_gal->SetCursorInCanvas( m_cursorInCanvas );
+
+    ForceRefresh();
 }
 
 
@@ -1607,6 +1630,7 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
     m_gal = nullptr;
 
     m_gal = new_gal;
+    m_gal->SetCursorInCanvas( m_cursorInCanvas );
 
     // The view lays itself out in the editor's world units as it attaches
     if( worldUnitLength > 0.0 )
@@ -1757,6 +1781,10 @@ void EDA_DRAW_PANEL_GAL::OnEvent( wxEvent& aEvent )
 
 void EDA_DRAW_PANEL_GAL::onEnter( wxMouseEvent& aEvent )
 {
+#if !defined __WXMSW__
+    SetCursorInCanvas( true );
+#endif
+
     bool shouldSetFocus = m_stealsFocus
                           && !KIUI::IsInputControlFocused()                // Don't steal from input controls
                           && !KIUI::IsModalDialogFocused()                 // Don't steal from dialogs
@@ -1821,6 +1849,14 @@ void EDA_DRAW_PANEL_GAL::onRefreshTimer( wxTimerEvent& aEvent )
 }
 
 
+void EDA_DRAW_PANEL_GAL::onCursorPollTimer( wxTimerEvent& aEvent )
+{
+#ifdef __WXMSW__
+    syncCursorInCanvas();
+#endif
+}
+
+
 void EDA_DRAW_PANEL_GAL::onShowEvent( wxShowEvent& aEvent )
 {
     wxLogTrace( traceRhi, wxS( "DrawPanel: onShowEvent windowId=%u show=%d IsShown=%d "
@@ -1828,11 +1864,26 @@ void EDA_DRAW_PANEL_GAL::onShowEvent( wxShowEvent& aEvent )
                 m_windowId, aEvent.IsShown(), IsShown(), IsShownOnScreen(),
                 m_gal ? m_gal->IsInitialized() : -1 );
 
+    syncCursorInCanvas();
+
     if( m_gal && m_gal->IsInitialized() && m_gal->IsVisible() )
     {
         OnShow();
     }
 
+}
+
+
+void EDA_DRAW_PANEL_GAL::syncCursorInCanvas()
+{
+    if( !IsShownOnScreen() )
+    {
+        SetCursorInCanvas( false );
+        return;
+    }
+
+    wxPoint mousePos = ScreenToClient( wxGetMousePosition() );
+    SetCursorInCanvas( GetClientRect().Contains( mousePos ) );
 }
 
 
