@@ -396,9 +396,7 @@ protected:
     void onIdle( wxIdleEvent& aEvent );
     void onRefreshTimer( wxTimerEvent& aEvent );
     void onIdleAwaitShow( wxIdleEvent& aEvent );
-    void onCursorPollTimer( wxTimerEvent& aEvent );
     void onShowEvent( wxShowEvent& aEvent );
-    void syncCursorInCanvas();
 
     bool recoverFromGalError( const std::exception& aErr );
 
@@ -463,7 +461,6 @@ protected:
     std::chrono::steady_clock::time_point m_lastRepaintStart; ///< Timestamp of the last repaint start
     std::chrono::steady_clock::time_point m_lastRepaintEnd;   ///< Timestamp of the last repaint end
     wxTimer                               m_refreshTimer;     ///< Timer to prevent too-frequent refreshing
-    wxTimer                               m_cursorPollTimer;  ///< Windows cursor containment polling
 
     std::mutex               m_refreshMutex;     ///< Blocks multiple calls to the draw
 
