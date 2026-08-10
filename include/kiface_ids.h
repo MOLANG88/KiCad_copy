@@ -92,7 +92,17 @@ enum KIFACE_ADDR_ID : int
     /// Function pointer type: void (*)( const wxString& aFootprint, PROJECT* aProject,
     ///                                  std::set<wxString>& aPadNumbers )
     /// Fills aPadNumbers with the numbered pads of aFootprint.
-    KIFACE_FOOTPRINT_PAD_NUMBERS
+    KIFACE_FOOTPRINT_PAD_NUMBERS,
+
+    /// bool (*)( const std::string& aBefore, const std::string& aAfter, KICAD_DIFF::DOCUMENT_DIFF* aDiff )
+    /// Names the symbols two versions of a symbol library file's text differ in, safe off the GUI thread.
+    /// False when either side does not parse.
+    KIFACE_DIFF_SYMBOL_LIBRARY_TEXT,
+
+    /// std::optional<std::string> (*)( const wxString& aFile, PROJECT& aProject, PROGRESS_REPORTER* aReporter )
+    /// The parts placed in the schematic or board saved at aFile, as a JSON array for Release Design, with the
+    /// load's progress shown on aReporter when given. Nothing when the file does not load.
+    KIFACE_COLLECT_PLACED_PARTS
 };
 
 #endif // KIFACE_IDS

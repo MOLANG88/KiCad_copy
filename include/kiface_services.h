@@ -20,6 +20,7 @@
 #ifndef KIFACE_SERVICES_H
 #define KIFACE_SERVICES_H
 
+#include <optional>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -30,6 +31,7 @@
 #include <kiway.h>
 
 class FOOTPRINT_LIBRARY_ADAPTER;
+class PROGRESS_REPORTER;
 class PROJECT;
 class REPORTER;
 class WIDGET_DIFF_CANVAS;
@@ -97,6 +99,14 @@ using KIFACE_TEST_FOOTPRINT_LINK_SERVICE =
 using KIFACE_FOOTPRINT_PAD_NUMBERS_SERVICE =
         KIFACE_SERVICE<KIFACE_FOOTPRINT_PAD_NUMBERS,
                        void (*)( const wxString&, PROJECT*, std::set<wxString>& )>;
+
+using KIFACE_DIFF_SYMBOL_LIBRARY_TEXT_SERVICE =
+        KIFACE_SERVICE<KIFACE_DIFF_SYMBOL_LIBRARY_TEXT,
+                       bool (*)( const std::string&, const std::string&, KICAD_DIFF::DOCUMENT_DIFF* )>;
+
+using KIFACE_COLLECT_PLACED_PARTS_SERVICE =
+        KIFACE_SERVICE<KIFACE_COLLECT_PLACED_PARTS,
+                       std::optional<std::string> (*)( const wxString&, PROJECT&, PROGRESS_REPORTER* )>;
 
 /**
  * Return a service address for IfaceOrAddress().
