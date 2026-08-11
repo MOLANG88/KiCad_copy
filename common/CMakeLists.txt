@@ -114,6 +114,7 @@ set( KICOMMON_SRCS
     git/project_git_hash.cpp
     git/git_remove_vcs_handler.cpp
     git/git_switch_branch_handler.cpp
+    git/git_library_members.cpp
     git/text_diff.cpp
 
     # Diff/merge engine
@@ -434,6 +435,7 @@ set( KIGIT_SRCS
     git/kigit_platform.cpp
     git/kigit_remote_url.cpp
     git/kigit_ssh_keys.cpp
+    git/kigit_symbol_split.cpp
     git/kigit_transport.cpp
     git/libgit_backend.cpp
     git/libgit_backend_history.cpp
