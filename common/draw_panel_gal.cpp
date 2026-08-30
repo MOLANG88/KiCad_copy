@@ -312,6 +312,8 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
              nullptr, this );
 
     Connect( wxEVT_SHOW, wxShowEventHandler( EDA_DRAW_PANEL_GAL::onShowEvent ), nullptr, this );
+
+    EDA_CURSOR_BROADCASTER::Instance().Register( this );
 }
 
 
@@ -320,6 +322,7 @@ EDA_DRAW_PANEL_GAL::~EDA_DRAW_PANEL_GAL()
     wxLogTrace( traceRhi, wxS( "DrawPanel: destructor windowId=%u backend=%d" ),
                 m_windowId, static_cast<int>( m_backend ) );
 
+    EDA_CURSOR_BROADCASTER::Instance().Unregister( this );
     m_touchpadGestureHandler.reset();
 
     // Ensure EDA_DRAW_PANEL_GAL::onShowEvent is not fired during Dtor process
@@ -358,6 +361,34 @@ void EDA_DRAW_PANEL_GAL::SetCursorInCanvas( bool aCursorInCanvas )
         m_gal->SetCursorInCanvas( m_cursorInCanvas );
 
     ForceRefresh();
+}
+
+
+bool EDA_DRAW_PANEL_GAL::IsSuspiciousLeaveAfterEnter( const wxPoint& aLeavePos ) const
+{
+    static constexpr long long SPURIOUS_LEAVE_WINDOW_MS = 100;
+    static constexpr int       SPURIOUS_LEAVE_RADIUS_SQ = 5 * 5;
+
+    if( m_lastEnterTime == std::chrono::steady_clock::time_point() )
+        return false;
+
+    long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - m_lastEnterTime )
+                                  .count();
+
+    if( elapsedMs > SPURIOUS_LEAVE_WINDOW_MS )
+        return false;
+
+    int dx = aLeavePos.x - m_lastEnterPos.x;
+    int dy = aLeavePos.y - m_lastEnterPos.y;
+
+    return ( dx * dx + dy * dy ) <= SPURIOUS_LEAVE_RADIUS_SQ;
+}
+
+
+void EDA_DRAW_PANEL_GAL::NotifyOtherCanvasesCursorEntered()
+{
+    EDA_CURSOR_BROADCASTER::Instance().NotifyCursorEntered( this );
 }
 
 
@@ -1774,7 +1805,11 @@ void EDA_DRAW_PANEL_GAL::OnEvent( wxEvent& aEvent )
 void EDA_DRAW_PANEL_GAL::onEnter( wxMouseEvent& aEvent )
 {
 #if !defined __WXMSW__
+    m_lastEnterTime = std::chrono::steady_clock::now();
+    m_lastEnterPos = aEvent.GetPosition();
+
     SetCursorInCanvas( true );
+    NotifyOtherCanvasesCursorEntered();
 #endif
 
     bool shouldSetFocus = m_stealsFocus
