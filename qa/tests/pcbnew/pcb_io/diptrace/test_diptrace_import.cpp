@@ -42,6 +42,10 @@
 #include <wx/filefn.h>
 #include <wx/filename.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <vector>
+
 
 struct DIPTRACE_PCB_IMPORT_FIXTURE
 {
@@ -57,6 +61,32 @@ struct DIPTRACE_PCB_IMPORT_FIXTURE
 
 
 BOOST_FIXTURE_TEST_SUITE( DipTracePcbImport, DIPTRACE_PCB_IMPORT_FIXTURE )
+
+
+/// A via inferred between In1.Cu and B.Cu on the four layer re-arm_pub.dip must stay blind.
+BOOST_AUTO_TEST_CASE( InferredBottomViaKeepsBlindSpanOnFourLayerBoard )
+{
+    std::unique_ptr<BOARD> board = m_plugin.LoadBoard( GetTestDataDir() + "re-arm_pub.dip" );
+    BOOST_REQUIRE_EQUAL( board->GetCopperLayerCount(), 4 );
+
+    // The P1.22 via at source node 0x3944C joins layer IDs 1 and 3.
+    const VECTOR2I position( -624966, 2010866 );
+    const auto&    tracks = board->Tracks();
+    auto           it = std::find_if( tracks.begin(), tracks.end(),
+                                      [&]( const PCB_TRACK* aTrack )
+                                      {
+                                          return aTrack->Type() == PCB_VIA_T
+                                                 && aTrack->GetPosition() == position
+                                                 && aTrack->GetNetname() == wxS( "P1.22" );
+                                      } );
+
+    BOOST_REQUIRE( it != tracks.end() );
+    const PCB_VIA* via = static_cast<const PCB_VIA*>( *it );
+
+    BOOST_CHECK( via->GetViaType() == VIATYPE::BLIND );
+    BOOST_CHECK_EQUAL( via->TopLayer(), In1_Cu );
+    BOOST_CHECK_EQUAL( via->BottomLayer(), B_Cu );
+}
 
 
 /**
