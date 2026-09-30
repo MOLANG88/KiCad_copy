@@ -26,6 +26,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <qa_utils/file_utils.h>
 #include <pcbnew_utils/board_test_utils.h>
@@ -33,6 +34,7 @@
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
+#include <pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr_parser.h>
 #include <io/kicad/kicad_io_utils.h>
 #include <progress_reporter.h>
 #include <richio.h>
@@ -44,6 +46,7 @@
 #include <footprint.h>
 #include <netinfo.h>
 #include <pad.h>
+#include <pcb_generated_table.h>
 #include <pcb_group.h>
 #include <pcb_shape.h>
 #include <pcb_track.h>
@@ -178,6 +181,270 @@ BOOST_AUTO_TEST_CASE( CoincidentDrawingsSurviveSave )
     BOOST_CHECK_EQUAL( reloaded->Drawings().size(), 2u );
 
     std::filesystem::remove( path.ToStdString() );
+}
+
+
+/**
+ * A board with the maximum 64 copper layers survives a save/load cycle.
+ */
+BOOST_AUTO_TEST_CASE( SixtyFourCopperLayersRoundTrip )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 64 );
+
+    BOOST_REQUIRE_EQUAL( board.GetCopperLayerCount(), 64 );
+    BOOST_REQUIRE( board.IsLayerEnabled( In62_Cu ) );
+
+    BOARD_DESIGN_SETTINGS& bds = board.GetDesignSettings();
+    bds.GetStackupDescriptor().BuildDefaultStackupList( &bds );
+    bds.m_HasStackup = true;
+
+    // 64 copper + 63 dielectric + 6 mask/paste/silk items, more than the old 128 item cap
+    const int stackupItemCount = bds.GetStackupDescriptor().GetCount();
+    BOOST_REQUIRE_EQUAL( stackupItemCount, 133 );
+
+    PCB_TRACK* track = new PCB_TRACK( &board );
+
+    track->SetLayer( In62_Cu );
+    track->SetStart( VECTOR2I( 0, 0 ) );
+    track->SetEnd( VECTOR2I( pcbIUScale.mmToIU( 5.0 ), 0 ) );
+    track->SetWidth( pcbIUScale.mmToIU( 0.2 ) );
+
+    board.Add( track, ADD_MODE::APPEND );
+
+    PCB_VIA* via = new PCB_VIA( &board );
+    via->SetLayerPair( F_Cu, B_Cu );
+    via->SetWidth( F_Cu, pcbIUScale.mmToIU( 0.6 ) );
+    via->SetDrill( pcbIUScale.mmToIU( 0.3 ) );
+    via->SetRemoveUnconnected( true );
+    via->SetZoneLayerOverride( In31_Cu, ZLO_FORCE_FLASHED );
+    via->SetZoneLayerOverride( In62_Cu, ZLO_FORCE_FLASHED );
+    via->SetZoneLayerOverride( B_Cu, ZLO_FORCE_NO_ZONE_CONNECTION );
+    board.Add( via, ADD_MODE::APPEND );
+
+    const wxString path = ( std::filesystem::temp_directory_path() / "qa_64_copper_layers.kicad_pcb" ).string();
+
+    kicadPlugin.SaveBoard( path, board );
+
+    std::unique_ptr<BOARD> reloaded = kicadPlugin.LoadBoard( path );
+
+    BOOST_CHECK_EQUAL( reloaded->GetCopperLayerCount(), 64 );
+    BOOST_CHECK( reloaded->IsLayerEnabled( In62_Cu ) );
+    BOOST_CHECK_EQUAL( reloaded->GetLayerName( In62_Cu ), wxT( "In62.Cu" ) );
+    BOOST_CHECK_EQUAL( reloaded->GetDesignSettings().GetStackupDescriptor().GetCount(), stackupItemCount );
+
+    BOOST_REQUIRE_EQUAL( reloaded->Tracks().size(), 2u );
+    const BOARD_ITEM* savedTrack = reloaded->ResolveItem( track->m_Uuid, true );
+    BOOST_REQUIRE( savedTrack );
+    BOOST_CHECK_EQUAL( savedTrack->GetLayer(), In62_Cu );
+
+    const BOARD_ITEM* savedItem = reloaded->ResolveItem( via->m_Uuid, true );
+    BOOST_REQUIRE( savedItem && savedItem->Type() == PCB_VIA_T );
+    const PCB_VIA* savedVia = static_cast<const PCB_VIA*>( savedItem );
+    BOOST_CHECK( savedVia->GetZoneLayerOverride( In31_Cu ) == ZLO_FORCE_FLASHED );
+    BOOST_CHECK( savedVia->GetZoneLayerOverride( In62_Cu ) == ZLO_FORCE_FLASHED );
+    BOOST_CHECK( savedVia->GetZoneLayerOverride( B_Cu ) == ZLO_FORCE_NO_ZONE_CONNECTION );
+
+    std::filesystem::remove( path.ToStdString() );
+}
+
+
+static std::string copperLayersText( const std::vector<std::string>& aInnerNames,
+                                     const std::string&              aFrontUserName = "" )
+{
+    std::string text = "(kicad_pcb (version " + std::to_string( SEXPR_BOARD_FILE_VERSION )
+                       + ") (generator \"qa\")\n  (layers\n    (0 \"F.Cu\" signal";
+
+    if( !aFrontUserName.empty() )
+        text += " \"" + aFrontUserName + "\"";
+
+    text += ")\n";
+
+    for( size_t i = 0; i < aInnerNames.size(); ++i )
+        text += "    (" + std::to_string( 4 + 2 * i ) + " \"" + aInnerNames[i] + "\" signal)\n";
+
+    text += "    (2 \"B.Cu\" signal)\n  )\n)\n";
+    return text;
+}
+
+
+static std::unique_ptr<BOARD> parseCopperLayers( const std::vector<std::string>& aInnerNames )
+{
+    STRING_LINE_READER        reader( copperLayersText( aInnerNames ), wxT( "copper layers" ) );
+    PCB_IO_KICAD_SEXPR_PARSER parser( &reader, nullptr, nullptr );
+
+    return std::unique_ptr<BOARD>( dynamic_cast<BOARD*>( parser.Parse() ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( InvalidCopperCountPreservesDestinationLayerName )
+{
+    std::vector<std::string> inner;
+
+    for( int i = 1; i <= MAX_CU_LAYERS; i++ )
+        inner.push_back( "In" + std::to_string( i ) + ".Cu" );
+
+    BOARD                     board;
+    STRING_LINE_READER        reader( copperLayersText( inner, "Parsed" ), wxT( "copper layers" ) );
+    PCB_IO_KICAD_SEXPR_PARSER parser( &reader, &board, nullptr );
+
+    BOOST_CHECK_EXCEPTION( parser.Parse(), IO_ERROR,
+                           []( const IO_ERROR& aError )
+                           {
+                               return aError.What().Contains( wxT( "66 is not a valid layer count" ) );
+                           } );
+    BOOST_CHECK_EQUAL( board.GetLayerName( F_Cu ), wxT( "F.Cu" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( CopperLayerNamePastIn62UsesStackPosition )
+{
+    std::vector<std::string> inner;
+
+    for( int i = 1; i < MAX_CU_LAYERS - 2; i++ )
+        inner.push_back( "In" + std::to_string( i ) + ".Cu" );
+
+    inner.push_back( "In63.Cu" );
+
+    std::unique_ptr<BOARD> board = parseCopperLayers( inner );
+
+    BOOST_REQUIRE( board );
+    BOOST_CHECK_EQUAL( board->GetCopperLayerCount(), MAX_CU_LAYERS );
+    BOOST_CHECK( board->IsLayerEnabled( In62_Cu ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( DuplicateResolvedCopperLayerPreservesDestination )
+{
+    for( const char* firstInner : { "In2.Cu", "In63.Cu" } )
+    {
+        BOOST_TEST_CONTEXT( "Inner layer names: " << firstInner << ", In63.Cu" )
+        {
+            BOARD board;
+            board.SetLayerName( F_Cu, wxS( "Destination" ) );
+            const LSET enabled = board.GetEnabledLayers();
+
+            std::string               text = copperLayersText( { firstInner, "In63.Cu" }, "Source" );
+            STRING_LINE_READER        reader( text, wxS( "copper layers" ) );
+            PCB_IO_KICAD_SEXPR_PARSER parser( &reader, &board, nullptr );
+
+            BOOST_CHECK_THROW( parser.Parse(), PARSE_ERROR );
+            BOOST_CHECK_EQUAL( board.GetLayerName( F_Cu ), wxS( "Destination" ) );
+            BOOST_CHECK_EQUAL( board.GetCopperLayerCount(), 2 );
+            BOOST_CHECK( board.GetEnabledLayers() == enabled );
+        }
+    }
+}
+
+
+// api_kitchen_sink is a 20261017 board, saved when B_Cu had copper ordinal 31
+BOOST_AUTO_TEST_CASE( LegacyDrillGroupKeysUseCurrentBottomOrdinal )
+{
+    std::unique_ptr<BOARD> board =
+            kicadPlugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + "api_kitchen_sink.kicad_pcb" );
+    const std::string throughSpan = "|L0-" + std::to_string( CopperLayerToOrdinal( B_Cu ) ) + "|";
+
+    const auto& assignments = board->GetDesignSettings().GetDrillSymbolProfile().Assignments();
+    BOOST_REQUIRE_EQUAL( assignments.size(), 3u );
+
+    for( const auto& [key, assignment] : assignments )
+        BOOST_CHECK_MESSAGE( key.find( throughSpan ) != std::string::npos, key );
+
+    int rowKeys = 0;
+
+    for( BOARD_ITEM* item : board->Drawings() )
+    {
+        if( PCB_GENERATED_TABLE* table = dynamic_cast<PCB_GENERATED_TABLE*>( item ) )
+        {
+            for( const auto& [row, key] : table->RowKeys() )
+            {
+                BOOST_CHECK_MESSAGE( key.find( throughSpan ) != std::string::npos, key );
+                rowKeys++;
+            }
+        }
+    }
+
+    BOOST_CHECK_EQUAL( rowKeys, 3 );
+
+    const std::string innerKey = "v1|d300000|s-|p1|L0-31|k0|m0:0:0:0/0:0:0:0";
+    const std::string bottomKey = "v1|d300000|s-|p1" + throughSpan + "k0|m0:0:0:0/0:0:0:0";
+
+    // Each table has 32 copper entries. The sparse table names In3.Cu through In32.Cu.
+    for( auto [version, firstInner] : { std::pair{ 20261031, 1 }, std::pair{ 20261031, 3 },
+                                        std::pair{ SEXPR_BOARD_FILE_VERSION, 1 } } )
+    {
+        std::vector<std::string> inner;
+
+        for( int layer = firstInner; layer < firstInner + 30; ++layer )
+            inner.push_back( "In" + std::to_string( layer ) + ".Cu" );
+
+        std::string text = copperLayersText( inner );
+        text.replace( text.find( std::to_string( SEXPR_BOARD_FILE_VERSION ) ), 8, std::to_string( version ) );
+
+        // A generated native board with both consumers of drill group keys before its layer list.
+        std::string profile = "(setup (drill_symbol_profile (assignment (key \"" + innerKey + "\") (mark shape 1))";
+        if( firstInner == 3 )
+            profile += "(assignment (key \"" + bottomKey + "\") (mark shape 2))";
+
+        text.insert( text.find( "(layers" ), profile + ")) (drill_chart (layer \"Dwgs.User\") (column_count 1)"
+                     " (row_keys (key 1 \"" + innerKey + "\"))) " );
+
+        if( version == 20261031 && firstInner == 1 )
+            text.insert( text.rfind( ')' ), "(footprint \"Newer\" (version 20261108) (layer \"F.Cu\"))" );
+
+        STRING_LINE_READER        reader( text, wxT( "generated drill profile and chart" ) );
+        PCB_IO_KICAD_SEXPR_PARSER parser( &reader, nullptr, nullptr );
+        std::unique_ptr<BOARD>    parsed( dynamic_cast<BOARD*>( parser.Parse() ) );
+
+        BOOST_REQUIRE( parsed );
+        const auto&       symbols = parsed->GetDesignSettings().GetDrillSymbolProfile();
+        const std::string expected = firstInner == 1 && version == 20261031 ? bottomKey : innerKey;
+
+        BOOST_CHECK( symbols.GetAssignment( expected ) && symbols.GetAssignment( expected )->m_ShapeIndex == 1 );
+
+        if( firstInner == 3 )
+            BOOST_CHECK( symbols.GetAssignment( bottomKey ) && symbols.GetAssignment( bottomKey )->m_ShapeIndex == 2 );
+
+        BOOST_REQUIRE_EQUAL( parsed->Drawings().size(), 1u );
+        const auto* chart = dynamic_cast<const PCB_GENERATED_TABLE*>( parsed->Drawings().front() );
+        BOOST_REQUIRE( chart && chart->RowKeys().count( 1 ) );
+        BOOST_CHECK_EQUAL( chart->RowKeys().at( 1 ), expected );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( AppendedLegacyDrillGroupKeysUseSourceLayerCount )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 64 );
+    std::map<std::string, UTF8> props;
+    props[PCB_IO_LOAD_PROPERTIES::APPEND_PRESERVE_DESTINATION_STACKUP] = "";
+
+    kicadPlugin.LoadAndAppendBoard( KI_TEST::GetPcbnewTestDataDir() + "api_kitchen_sink.kicad_pcb", board, &props );
+
+    BOOST_CHECK_EQUAL( board.GetCopperLayerCount(), 64 );
+    const std::string throughSpan = "|L0-" + std::to_string( CopperLayerToOrdinal( B_Cu ) ) + "|";
+    const auto&       assignments = board.GetDesignSettings().GetDrillSymbolProfile().Assignments();
+    BOOST_REQUIRE_EQUAL( assignments.size(), 3u );
+
+    for( const auto& [key, assignment] : assignments )
+        BOOST_CHECK_MESSAGE( key.find( throughSpan ) != std::string::npos, key );
+
+    int rowKeys = 0;
+
+    for( BOARD_ITEM* item : board.Drawings() )
+    {
+        if( PCB_GENERATED_TABLE* table = dynamic_cast<PCB_GENERATED_TABLE*>( item ) )
+        {
+            for( const auto& [row, key] : table->RowKeys() )
+            {
+                BOOST_CHECK_MESSAGE( key.find( throughSpan ) != std::string::npos, key );
+                rowKeys++;
+            }
+        }
+    }
+
+    BOOST_CHECK_EQUAL( rowKeys, 3 );
 }
 
 

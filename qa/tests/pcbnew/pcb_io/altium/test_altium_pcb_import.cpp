@@ -24,6 +24,8 @@
 
 #include <pcbnew_utils/board_test_utils.h>
 #include <pcbnew_utils/board_file_utils.h>
+#include <qa_utils/downgrade_oracle_utils.h>
+#include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <pcbnew/pcb_io/altium/pcb_io_altium_designer.h>
@@ -37,6 +39,7 @@
 
 #include <board.h>
 #include <convert_shape_list_to_polygon.h>
+#include <downgrade/board_downgrade.h>
 #include <board_design_settings.h>
 #include <footprint.h>
 #include <board_stackup_manager/board_stackup.h>
@@ -138,6 +141,42 @@ BOOST_AUTO_TEST_CASE( NetCodeRejectsIdPastEnd )
     BOOST_CHECK_THROW( getNetCode( importer, netcodes, 3 ), IO_ERROR );
     BOOST_CHECK_EQUAL( getNetCode( importer, netcodes, ALTIUM_NET_UNCONNECTED ),
                        NETINFO_LIST::UNCONNECTED );
+}
+
+
+// Generated library containing the first Pads6 and Vias6 records from planes_48_layers.PcbDoc,
+// with their board nets cleared. Altium stores 32 signal layer entries in each full stack.
+BOOST_AUTO_TEST_CASE( FullStackLibraryPadAndViaUseSourceLayers )
+{
+    SETTINGS_MANAGER settingsManager;
+    std::string path = KI_TEST::GetPcbnewTestDataDir() + "plugins/altium/issue7232/generated_full_stack.PcbLib";
+    std::unique_ptr<FOOTPRINT> footprint = m_altiumPlugin.FootprintLoad( path, wxT( "FullStack" ) );
+
+    BOOST_REQUIRE( footprint );
+    BOOST_REQUIRE_EQUAL( footprint->Pads().size(), 2 );
+
+    for( const PAD* pad : footprint->Pads() )
+    {
+        const PADSTACK& stack = pad->Padstack();
+        BOOST_REQUIRE( stack.Mode() == PADSTACK::MODE::CUSTOM );
+        BOOST_CHECK( stack.HasExplicitDefinitionForLayer( In30_Cu ) );
+        BOOST_CHECK( stack.HasExplicitDefinitionForLayer( B_Cu ) );
+        BOOST_CHECK( !stack.HasExplicitDefinitionForLayer( In31_Cu ) );
+        BOOST_CHECK( !stack.HasExplicitDefinitionForLayer( In62_Cu ) );
+
+        if( pad->GetNumber().IsEmpty() )
+            BOOST_CHECK_EQUAL( pad->GetSize( In30_Cu ).x, pcbIUScale.mmToIU( 1.245 ) );
+        else
+            BOOST_CHECK( pad->GetShape( B_Cu ) == PAD_SHAPE::ROUNDRECT );
+    }
+
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_altium_full_stack" );
+    const auto               source = tmp.Path() / "FullStack.kicad_mod";
+    const auto               output = tmp.Path() / "legacy.kicad_mod";
+    KI_TEST::DumpFootprintToFile( *footprint, source );
+    const auto& target = KI_TEST::RequireDowngradeTarget( wxT( "10.0" ) );
+    BOOST_CHECK( DowngradeFootprintFileToTemp( source.wstring(), output.wstring(), target )
+                 == DOWNGRADE_FILE_RESULT::CONVERTED );
 }
 
 

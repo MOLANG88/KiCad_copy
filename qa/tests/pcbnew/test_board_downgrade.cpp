@@ -99,6 +99,178 @@ BOOST_AUTO_TEST_CASE( EmptyBoardIsClean )
 }
 
 
+BOOST_AUTO_TEST_CASE( CopperLayerLimitBlocksOlderExports )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_copper_downgrade", "" );
+    const wxString           source = ( tmp.Path() / "source.kicad_pcb" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_pcb" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+
+    for( int count : { 32, 34, 64 } )
+    {
+        BOARD board;
+        board.SetCopperLayerCount( count );
+        board.SetEnabledLayers( LSET::AllCuMask( count ) );
+        io.SaveBoard( source, board );
+
+        for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+        {
+            for( bool drop : { false, true } )
+            {
+                COMPATIBILITY_REPORT report;
+                bool                 exported =
+                        ExportBoardToOlderVersion( source, output, target, report, nullptr, wxEmptyString, drop );
+
+                BOOST_CHECK_EQUAL( exported, count == 32 );
+                BOOST_CHECK_EQUAL( report.IsBlocked(), count > 32 );
+                BOOST_CHECK_EQUAL( wxFileExists( output ), count == 32 );
+
+                if( exported )
+                {
+                    std::unique_ptr<BOARD> reloaded( io.LoadBoard( output, nullptr ) );
+                    BOOST_REQUIRE( reloaded );
+                    BOOST_CHECK_EQUAL( reloaded->GetCopperLayerCount(), count );
+                    wxRemoveFile( output );
+                }
+            }
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( DisabledHighCopperTrackBlocksOlderExports )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_disabled_copper" );
+    const wxString           source = ( tmp.Path() / "source.kicad_pcb" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_pcb" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+    BOARD                    board;
+    board.SetCopperLayerCount( 34 );
+    PCB_TRACK* track = new PCB_TRACK( &board );
+    track->SetLayer( In31_Cu );
+    track->SetEnd( VECTOR2I( 1000000, 0 ) );
+    track->SetWidth( 200000 );
+    board.Add( track );
+    board.SetCopperLayerCount( 32 );
+    io.SaveBoard( source, board );
+
+    std::unique_ptr<BOARD> reloaded( io.LoadBoard( source, nullptr ) );
+    BOOST_REQUIRE( reloaded && reloaded->Tracks().size() == 1 );
+    BOOST_CHECK_EQUAL( reloaded->GetCopperLayerCount(), 32 );
+    BOOST_CHECK( !reloaded->IsLayerEnabled( In31_Cu ) );
+    BOOST_CHECK_EQUAL( ( *reloaded->Tracks().begin() )->GetLayer(), In31_Cu );
+
+    for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+    {
+        COMPATIBILITY_REPORT report;
+        BOOST_CHECK( !ExportBoardToOlderVersion( source, output, target, report ) );
+        BOOST_CHECK( report.IsBlocked() );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( DisabledCopperZoneFillBlocksOlderExports )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_disabled_zone_fill" );
+    const wxString           source = ( tmp.Path() / "source.kicad_pcb" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_pcb" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+    BOARD                    board;
+    board.SetCopperLayerCount( 34 );
+    ZONE* zone = new ZONE( &board );
+    zone->SetLayerSet( LSET( { F_Cu, In31_Cu } ) );
+    zone->Outline()->NewOutline();
+    zone->Outline()->Append( 0, 0 );
+    zone->Outline()->Append( 1000000, 0 );
+    zone->Outline()->Append( 1000000, 1000000 );
+    zone->SetFilledPolysList( F_Cu, *zone->Outline() );
+    zone->SetFilledPolysList( In31_Cu, *zone->Outline() );
+    zone->SetIsFilled( true );
+    board.Add( zone );
+    board.SetCopperLayerCount( 32 );
+
+    for( bool highFill : { true, false } )
+    {
+        if( !highFill )
+            zone->SetFilledPolysList( In31_Cu, SHAPE_POLY_SET() );
+
+        io.SaveBoard( source, board );
+        std::unique_ptr<BOARD> parsed( io.LoadBoard( source, nullptr ) );
+        BOOST_REQUIRE( parsed && parsed->GetCopperLayerCount() == 32 && parsed->Zones().size() == 1 );
+        ZONE* saved = parsed->Zones().front();
+        BOOST_REQUIRE( saved->GetLayerSet() == LSET( { F_Cu } ) );
+        BOOST_REQUIRE_EQUAL( saved->GetFilledPolysList( F_Cu )->OutlineCount(), 1 );
+        SHAPE_POLY_SET* fill = saved->GetFill( In31_Cu );
+        BOOST_REQUIRE_EQUAL( fill ? fill->OutlineCount() : 0, highFill ? 1 : 0 );
+
+        for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+        {
+            COMPATIBILITY_REPORT report;
+            BOOST_CHECK_EQUAL( ExportBoardToOlderVersion( source, output, target, report ), !highFill );
+            BOOST_CHECK_EQUAL( report.IsBlocked(), highFill );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( CustomViaDiameterRespectsLegacyCopperLayers )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_via_copper" );
+    const wxString           source = ( tmp.Path() / "source.kicad_pcb" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_pcb" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+    BOARD                    board;
+    board.SetCopperLayerCount( 32 );
+    PCB_VIA* via = new PCB_VIA( &board );
+    via->Padstack().SetMode( PADSTACK::MODE::CUSTOM );
+    via->SetWidth( F_Cu, 600000 );
+    via->SetWidth( In30_Cu, 900000 );
+    via->SetDrill( 300000 );
+    board.Add( via );
+    io.SaveBoard( source, board );
+
+    for( PCB_LAYER_ID layer : { In30_Cu, In31_Cu } )
+    {
+        if( layer == In31_Cu )
+        {
+            // Generate the disabled-layer case by changing only the native padstack entry.
+            wxFFile  file( source, wxT( "rb" ) );
+            wxString input;
+            BOOST_REQUIRE( file.IsOpened() && file.ReadAll( &input ) && file.Close() );
+            BOOST_REQUIRE_EQUAL( input.Replace( "(layer \"In30.Cu\"", "(layer \"In31.Cu\"" ), 1 );
+            BOOST_REQUIRE( file.Open( source, wxT( "wb" ) ) && file.Write( input ) && file.Close() );
+        }
+
+        std::unique_ptr<BOARD> parsed( io.LoadBoard( source, nullptr ) );
+        BOOST_REQUIRE( parsed && parsed->GetCopperLayerCount() == 32 && parsed->Tracks().size() == 1 );
+        const PCB_VIA* parsedVia = dynamic_cast<const PCB_VIA*>( *parsed->Tracks().begin() );
+        BOOST_REQUIRE( parsedVia && parsedVia->GetViaType() == VIATYPE::THROUGH );
+        BOOST_REQUIRE_EQUAL( parsedVia->GetWidth( layer ), 900000 );
+
+        for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+        {
+            COMPATIBILITY_REPORT report;
+            bool                 exported = ExportBoardToOlderVersion( source, output, target, report );
+            BOOST_CHECK_EQUAL( exported, layer == In30_Cu );
+            BOOST_CHECK_EQUAL( report.IsBlocked(), layer == In31_Cu );
+
+            if( exported && layer == In30_Cu )
+            {
+                std::unique_ptr<BOARD> converted( io.LoadBoard( output, nullptr ) );
+                BOOST_REQUIRE( converted && converted->Tracks().size() == 1 );
+                const PCB_VIA* saved = dynamic_cast<const PCB_VIA*>( *converted->Tracks().begin() );
+                BOOST_REQUIRE( saved );
+                BOOST_CHECK_EQUAL( saved->GetWidth( layer ), 900000 );
+            }
+        }
+    }
+}
+
+
 // The ellipse primitive only exists since 20260508, so 10.0 gets an approximation.
 BOOST_AUTO_TEST_CASE( EllipseIsLoweredForKicad10 )
 {
@@ -299,6 +471,116 @@ BOOST_AUTO_TEST_CASE( CustomFootprintStackupBlocksKicad9 )
 }
 
 
+BOOST_AUTO_TEST_CASE( HighCopperFootprintStackupBlocksKicad10 )
+{
+    for( PCB_LAYER_ID inner : { In30_Cu, In31_Cu, In62_Cu } )
+    {
+        BOARD      board;
+        FOOTPRINT* fp = new FOOTPRINT( &board );
+        fp->SetStackupMode( FOOTPRINT_STACKUP::CUSTOM_LAYERS );
+        fp->SetStackupLayers( LSET( { F_Cu, inner, B_Cu } ) );
+        board.Add( fp );
+
+        for( bool drop : { false, true } )
+        {
+            COMPATIBILITY_REPORT report = ClassifyBoardForDowngrade( &board, kicad10, drop );
+            BOOST_CHECK_EQUAL( report.IsBlocked(), inner != In30_Cu );
+        }
+
+        board.SetCopperLayerCount( 34 );
+        BOOST_CHECK_EQUAL( ClassifyBoardForDowngrade( &board, kicad10 ).Count( DOWNGRADE_BUCKET::BLOCK ),
+                           inner == In62_Cu ? 3 : 2 );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( FootprintFileCustomPadRespectsTargetCopperLayers )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_fp_pad_layers" );
+    const wxString           source = ( tmp.Path() / "pad.kicad_mod" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_mod" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+
+    for( PCB_LAYER_ID inner : { In30_Cu, In31_Cu } )
+    {
+        FOOTPRINT footprint( nullptr );
+        PAD*      pad = new PAD( &footprint );
+        pad->SetAttribute( PAD_ATTRIB::PTH );
+        pad->SetLayerSet( LSET::AllCuMask() );
+        pad->Padstack().SetMode( PADSTACK::MODE::CUSTOM );
+        pad->SetSize( F_Cu, VECTOR2I( 1800000, 1800000 ) );
+        pad->SetSize( inner, VECTOR2I( 1400000, 1400000 ) );
+        footprint.Add( pad );
+        io.FootprintSave( source, &footprint );
+
+        for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+        {
+            const auto result = DowngradeFootprintFileToTemp( source, output, target );
+
+            if( inner == In31_Cu )
+            {
+                BOOST_CHECK( result == DOWNGRADE_FILE_RESULT::REFUSED );
+                continue;
+            }
+
+            BOOST_REQUIRE( result == DOWNGRADE_FILE_RESULT::CONVERTED );
+            wxFFile  file( output, wxT( "rb" ) );
+            wxString text;
+            BOOST_REQUIRE( file.IsOpened() && file.ReadAll( &text ) );
+            BOOST_CHECK( text.Contains( wxT( "\"In30.Cu\"" ) ) );
+            BOOST_CHECK( !text.Contains( wxT( "\"In31.Cu\"" ) ) );
+            wxString name;
+            auto     converted = io.ImportFootprint( output, name );
+            BOOST_REQUIRE( converted && converted->Pads().size() == 1 );
+            BOOST_CHECK( converted->Pads()[0]->GetSize( In30_Cu ) == VECTOR2I( 1400000, 1400000 ) );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( FootprintFileHighCopperGraphicsBlockOlderExports )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_fp_graphic_layers" );
+    const wxString           input = ( tmp.Path() / "membership.kicad_mod" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_mod" ).wstring();
+    PCB_IO_KICAD_SEXPR io;
+    FOOTPRINT          footprint( nullptr );
+    PCB_SHAPE*         line = new PCB_SHAPE( &footprint, SHAPE_T::SEGMENT );
+    line->SetLayer( In30_Cu );
+    line->SetEnd( VECTOR2I( 1000000, 0 ) );
+    line->SetWidth( 200000 );
+    footprint.Add( line );
+    PAD*               pad = new PAD( &footprint );
+    pad->SetAttribute( PAD_ATTRIB::PTH );
+    footprint.Add( pad );
+    ZONE* zone = new ZONE( &footprint );
+    zone->SetIsRuleArea( true );
+    zone->Outline()->NewOutline();
+    zone->Outline()->Append( 0, 0 );
+    zone->Outline()->Append( 1000000, 0 );
+    zone->Outline()->Append( 1000000, 1000000 );
+    footprint.Add( zone );
+
+    auto checkMembership = [&]( const LSET& padLayers, PCB_LAYER_ID zoneLayer, DOWNGRADE_FILE_RESULT expected )
+    {
+        pad->SetLayerSet( padLayers );
+        zone->SetLayer( zoneLayer );
+        io.FootprintSave( input, &footprint );
+
+        for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+            BOOST_CHECK( DowngradeFootprintFileToTemp( input, output, target ) == expected );
+    };
+
+    checkMembership( LSET::AllCuMask(), In30_Cu, DOWNGRADE_FILE_RESULT::CONVERTED );
+    checkMembership( LSET( { In31_Cu } ), In30_Cu, DOWNGRADE_FILE_RESULT::REFUSED );
+    checkMembership( LSET::AllCuMask(), In31_Cu, DOWNGRADE_FILE_RESULT::REFUSED );
+    line->SetLayer( In31_Cu );
+    checkMembership( LSET::AllCuMask(), In30_Cu, DOWNGRADE_FILE_RESULT::REFUSED );
+}
+
+
 // Non-component pads (20261031) cannot be represented by older writers for now.
 // (Probably they can be approximated, but needs some thought)
 BOOST_AUTO_TEST_CASE( NonComponentPadBlocksOlderTargets )
@@ -496,6 +778,95 @@ BOOST_AUTO_TEST_CASE( BackdrillBlocksKicad9 )
 
     BOOST_CHECK_EQUAL( ClassifyBoardForDowngrade( &board, kicad10 ).Count( DOWNGRADE_BUCKET::BLOCK ), 0 );
     BOOST_CHECK_EQUAL( ClassifyBoardForDowngrade( &board, kicad9 ).Count( DOWNGRADE_BUCKET::BLOCK ), 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( FootprintBackdrillRespectsKicad10CopperLayers )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_fp_drill_layers" );
+    const wxString           source = ( tmp.Path() / "pad.kicad_mod" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_mod" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+
+    for( bool tertiary : { false, true } )
+    {
+        FOOTPRINT footprint( nullptr );
+        PAD*      pad = new PAD( &footprint );
+        footprint.Add( pad );
+        auto& drill = tertiary ? pad->Padstack().TertiaryDrill() : pad->Padstack().SecondaryDrill();
+        drill.size = VECTOR2I( 1000000, 1000000 );
+        drill.start = tertiary ? B_Cu : F_Cu;
+
+        for( PCB_LAYER_ID inner : { In30_Cu, In31_Cu } )
+        {
+            drill.end = inner;
+            io.FootprintSave( source, &footprint );
+            const auto result = DowngradeFootprintFileToTemp( source, output, kicad10 );
+
+            if( inner == In31_Cu )
+            {
+                BOOST_CHECK( result == DOWNGRADE_FILE_RESULT::REFUSED );
+                continue;
+            }
+
+            BOOST_REQUIRE( result == DOWNGRADE_FILE_RESULT::CONVERTED );
+            wxString name;
+            auto     converted = io.ImportFootprint( output, name );
+            BOOST_REQUIRE( converted && converted->Pads().size() == 1 );
+            const PADSTACK& stack = converted->Pads()[0]->Padstack();
+            const auto&     saved = tertiary ? stack.TertiaryDrill() : stack.SecondaryDrill();
+            BOOST_CHECK( saved.size == drill.size );
+            BOOST_CHECK_EQUAL( saved.start, drill.start );
+            BOOST_CHECK_EQUAL( saved.end, inner );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( ViaBackdrillSurvivesBoardLayerReduction )
+{
+    SETTINGS_MANAGER         settingsManager;
+    KI_TEST::SCOPED_TEMP_DIR tmp( "kicad_qa_via_drill_layers" );
+    const wxString           source = ( tmp.Path() / "source.kicad_pcb" ).wstring();
+    const wxString           output = ( tmp.Path() / "output.kicad_pcb" ).wstring();
+    PCB_IO_KICAD_SEXPR       io;
+
+    for( PCB_LAYER_ID layer : { In30_Cu, In31_Cu } )
+    {
+        BOARD board;
+        board.SetCopperLayerCount( 34 );
+        PCB_VIA* via = new PCB_VIA( &board );
+        via->SetWidth( F_Cu, 900000 );
+        via->SetDrill( 300000 );
+        via->SetSecondaryDrillSize( VECTOR2I( 500000, 500000 ) );
+        via->SetSecondaryDrillStartLayer( F_Cu );
+        via->SetSecondaryDrillEndLayer( layer );
+        board.Add( via );
+        board.SetCopperLayerCount( 32 );
+        io.SaveBoard( source, board );
+
+        auto checkDrill = [&]( const wxString& path )
+        {
+            std::unique_ptr<BOARD> parsed( io.LoadBoard( path, nullptr ) );
+            BOOST_REQUIRE( parsed && parsed->GetCopperLayerCount() == 32 && parsed->Tracks().size() == 1 );
+            const PCB_VIA* saved = dynamic_cast<const PCB_VIA*>( *parsed->Tracks().begin() );
+            BOOST_REQUIRE( saved && saved->GetViaType() == VIATYPE::THROUGH );
+            const auto& drill = saved->Padstack().SecondaryDrill();
+            BOOST_CHECK( drill.size == VECTOR2I( 500000, 500000 ) );
+            BOOST_CHECK_EQUAL( drill.start, F_Cu );
+            BOOST_CHECK_EQUAL( drill.end, layer );
+        };
+
+        checkDrill( source );
+        COMPATIBILITY_REPORT report;
+        bool exported = ExportBoardToOlderVersion( source, output, kicad10, report );
+        BOOST_CHECK_EQUAL( exported, layer == In30_Cu );
+        BOOST_CHECK_EQUAL( report.IsBlocked(), layer == In31_Cu );
+
+        if( exported && layer == In30_Cu )
+            checkDrill( output );
+    }
 }
 
 
@@ -2038,6 +2409,9 @@ BOOST_AUTO_TEST_CASE( FootprintFileKeepsZoneLayers )
         zone->Outline()->Append( 0, pcbIUScale.mmToIU( 1 ) );
         fp->Add( zone );
 
+        PCB_IO_KICAD_SEXPR().FootprintSave( src, fp.get() );
+        BOOST_CHECK( DowngradeFootprintFileToTemp( src, dest, kicad10 ) == DOWNGRADE_FILE_RESULT::REFUSED );
+
         SaveFootprintForTarget( fp.get(), src, kicad10 );
     }
 
@@ -2053,6 +2427,86 @@ BOOST_AUTO_TEST_CASE( FootprintFileKeepsZoneLayers )
     BOOST_REQUIRE_EQUAL( converted->Zones().size(), 1 );
 
     BOOST_CHECK_EQUAL( converted->Zones()[0]->GetLayerSet().count(), srcAgain->Zones()[0]->GetLayerSet().count() );
+
+    const wxString wildcard = KI_TEST::GetPcbnewTestDataDir()
+                              + "plugins/altium/pcblib/Tracks.pretty/KEEP_OUT_LAYER.kicad_mod";
+    wxFFile  fixture( wildcard, wxT( "rb" ) );
+    wxString original;
+    BOOST_REQUIRE( fixture.IsOpened() && fixture.ReadAll( &original ) );
+    BOOST_REQUIRE_EQUAL( original.Replace( "(zone", "(pad \"1\" thru_hole circle (at 0 0) (size 1 1) "
+                                          "(drill 0.5) (layers \"*.Cu\"))\n(zone", false ), 1 );
+
+    const LSET targetCopper = LSET::AllCuMask( 32 );
+    const LSET targetInner = targetCopper & LSET::InternalCuMask();
+
+    for( const auto& [innerOnly, keepout] : { std::pair{ false, true }, std::pair{ true, true },
+                                              std::pair{ false, false } } )
+    {
+        wxString input = original;
+        if( innerOnly )
+            BOOST_REQUIRE_EQUAL( input.Replace( "\"*.Cu\"", "\"*In.Cu\"" ), 2 );
+
+        if( !keepout )
+        {
+            const size_t start = input.find( "(keepout" );
+            BOOST_REQUIRE_NE( start, wxString::npos );
+            const size_t end = input.find( "(fill", start );
+            BOOST_REQUIRE_NE( end, wxString::npos );
+            input.erase( start, end - start );
+        }
+
+        {
+            wxFFile file( src, wxT( "wb" ) );
+            BOOST_REQUIRE( file.IsOpened() && file.Write( input ) );
+        }
+
+        if( !keepout )
+        {
+            auto footprint = reader.ImportFootprint( src, nameOut );
+            BOOST_REQUIRE( footprint && footprint->Zones().size() == 1 );
+            reader.FootprintSave( src, footprint.get() );
+
+            // An unversioned footprint inherits its board's version. Keep an explicitly
+            // named layer even when it follows a legacy wildcard in the same zone.
+            BOOST_REQUIRE_EQUAL( input.Replace( "(version 20240108)", "" ), 1 );
+            BOOST_REQUIRE_EQUAL( input.Replace( "(layers \"*.Cu\")\n", "(layers \"*.Cu\" \"In31.Cu\")\n" ), 1 );
+            input.insert( input.rfind( ')' ), " (zone (layers \"F.Cu\" \"B.Cu\") (fill (mode thieving))"
+                                               " (polygon (pts (xy 2 0) (xy 3 0) (xy 2 1))))" );
+            const wxString boardPath = ( tmp.Path() / "nested.kicad_pcb" ).wstring();
+            {
+                wxFFile file( boardPath, wxT( "wb" ) );
+                BOOST_REQUIRE( file.IsOpened()
+                               && file.Write( "(kicad_pcb (version 20260513) (generator pcbnew)"
+                                              " (layers (0 \"F.Cu\" signal) (31 \"B.Cu\" signal))"
+                                              " (footprint \"Other\" (layer \"F.Cu\")"
+                                              " (zone (layers \"*.Cu\") (polygon (pts (xy 0 0) (xy 1 0) (xy 0 1))))"
+                                              " (version 20261108))"
+                                              + input + ")" ) );
+            }
+
+            auto board = reader.LoadBoard( boardPath );
+            BOOST_REQUIRE( board && board->Footprints().size() == 2 );
+            const auto& modernZones = board->Footprints().front()->Zones();
+            BOOST_REQUIRE_EQUAL( modernZones.size(), 1 );
+            BOOST_CHECK( modernZones[0]->GetLayerSet() == LSET::AllCuMask() );
+            const auto& zones = board->Footprints().back()->Zones();
+            BOOST_REQUIRE_EQUAL( zones.size(), 2 );
+            BOOST_CHECK( zones.front()->GetLayerSet() == ( targetCopper | LSET{ In31_Cu } ) );
+            BOOST_CHECK( zones.back()->IsCopperThieving() && zones.back()->GetLayerSet() == LSET{ F_Cu } );
+        }
+
+        for( const DOWNGRADE_TARGET& target : { kicad9, kicad10 } )
+        {
+            BOOST_REQUIRE( DowngradeFootprintFileToTemp( src, dest, target ) == DOWNGRADE_FILE_RESULT::CONVERTED );
+            converted = reader.ImportFootprint( dest, nameOut );
+            BOOST_REQUIRE( converted && converted->Zones().size() == 1 && converted->Pads().size() == 1 );
+            const LSET& expected = innerOnly ? targetInner : targetCopper;
+            BOOST_CHECK_EQUAL( converted->Zones()[0]->GetIsRuleArea(), keepout );
+            BOOST_CHECK_EQUAL( converted->Zones()[0]->GetNumCorners(), 20 );
+            BOOST_CHECK( converted->Zones()[0]->GetLayerSet() == expected );
+            BOOST_CHECK( converted->Pads()[0]->GetLayerSet() == ( innerOnly ? expected : LSET::AllCuMask() ) );
+        }
+    }
 }
 
 

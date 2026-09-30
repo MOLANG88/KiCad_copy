@@ -41,6 +41,7 @@ set( QA_PCBNEW_SRCS
     test_board_design_settings.cpp
     test_board_item_index.cpp
     test_board_loader.cpp
+    test_board_stackup.cpp
     test_project_file_implicit_save.cpp
     test_board_item.cpp
     test_drill_chart.cpp
@@ -112,6 +113,7 @@ set( QA_PCBNEW_SRCS
     test_odb_drill_tools.cpp
     test_odb_soldermask_shape_export.cpp
     test_issue25074_odb_knockout_textbox.cpp
+    test_pcb_actions.cpp
     test_pcb_control_rehatch.cpp
     test_pcb_handle_key.cpp
     test_pns_basics.cpp

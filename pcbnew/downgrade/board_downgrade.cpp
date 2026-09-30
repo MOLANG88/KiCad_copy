@@ -38,6 +38,7 @@
 #include <board.h>
 #include <board_design_settings.h>
 #include <footprint.h>
+#include <io/kicad/legacy_format.h>
 #include <constraints/pcb_constraint.h>
 #include <pad.h>
 #include <pcb_barcode.h>
@@ -118,6 +119,7 @@ static constexpr int VER_IMAGE_OPACITY = 20261025;
 static constexpr int VER_FP_LIB_HEADER = 20261028;
 static constexpr int VER_STACKUP_TABLE = 20261030;
 static constexpr int VER_NON_COMPONENT_PAD = 20261031;
+static constexpr int VER_64_COPPER_LAYERS = 20261108;
 
 // The board format these rules were written against. When SEXPR_BOARD_FILE_VERSION moves past
 // it, ClassifyBoardForDowngrade asserts in debug builds until the new format is covered.
@@ -129,11 +131,11 @@ static constexpr int VER_NON_COMPONENT_PAD = 20261031;
 // 3. Otherwise add a VER_ constant above, a BOARD_RULE row that counts and strips the feature,
 //    and a dated row in BOARD_TOKENS or BOARD_VALUES for each new node head or bareword value.
 // 4. Set this constant to the new version.
-static constexpr int BOARD_DOWNGRADE_COVERED = 20261031;
+static constexpr int BOARD_DOWNGRADE_COVERED = 20261108;
 
 // The footprint library format these rules were reviewed against. It moves independently of the
 // board format, so it needs its own gate.
-static constexpr int FOOTPRINT_LIB_DOWNGRADE_COVERED = 20261031;
+static constexpr int FOOTPRINT_LIB_DOWNGRADE_COVERED = 20261108;
 
 
 static bool isEllipse( const BOARD_ITEM* aItem )
@@ -950,6 +952,155 @@ static void dropPcbPoints( BOARD* aBoard )
 
     for( FOOTPRINT* fp : aBoard->Footprints() )
         dropPcbPointsFp( fp );
+}
+
+
+static void visitBoardItems( const BOARD* aBoard, const std::function<void( BOARD_ITEM* )>& aVisit )
+{
+    aBoard->RunOnChildren( aVisit, RECURSE_MODE::RECURSE );
+
+    // Generators are omitted by BOARD::RunOnChildren.
+    for( PCB_GENERATOR* generator : aBoard->Generators() )
+    {
+        aVisit( generator );
+
+        for( const auto& [name, item] : generator->GetTemplateItems() )
+        {
+            if( item )
+                aVisit( const_cast<BOARD_ITEM*>( item ) );
+        }
+    }
+}
+
+
+static int countHighCopperLayers( const BOARD* aBoard )
+{
+    const LSET highLayers = LSET::AllCuMask() & ~LSET::AllCuMask( KICAD_FORMAT::LEGACY::MAX_COPPER_LAYERS );
+    LSET       usedLayers = aBoard->GetEnabledLayers();
+
+    auto addLayer = [&]( PCB_LAYER_ID layer )
+    {
+        if( highLayers.Contains( layer ) )
+            usedLayers.set( layer );
+    };
+
+    auto addPadstackLayers = [&]( const PADSTACK& stack )
+    {
+        if( stack.Mode() == PADSTACK::MODE::CUSTOM )
+            stack.ForEachUniqueLayer( addLayer );
+
+        for( const auto* drill : { &stack.SecondaryDrill(), &stack.TertiaryDrill() } )
+        {
+            if( drill->size.x > 0 )
+            {
+                addLayer( drill->start );
+                addLayer( drill->end );
+            }
+        }
+    };
+
+    auto addZoneProperties = [&]( const std::map<PCB_LAYER_ID, ZONE_LAYER_PROPERTIES>& layerProperties )
+    {
+        for( const auto& [layer, properties] : layerProperties )
+        {
+            if( properties.hatching_offset.has_value() )
+                addLayer( layer );
+        }
+    };
+
+    const BOARD_DESIGN_SETTINGS& settings = aBoard->GetDesignSettings();
+    addZoneProperties( settings.m_ZoneLayerProperties );
+
+    if( settings.m_HasStackup )
+    {
+        for( const BOARD_STACKUP_ITEM* layer : settings.GetStackupDescriptor().GetList() )
+            addLayer( layer->GetBrdLayerId() );
+    }
+
+    auto addItemLayers = [&]( BOARD_ITEM* item )
+    {
+        switch( item->Type() )
+        {
+        case PCB_MARKER_T:
+        case PCB_GRID_ITEM_T:
+        case PCB_GROUP_T:
+            // No layer is written for these items. Group members are visited individually.
+            break;
+
+        case PCB_GENERATOR_T:
+            // The generator's own layer is stored separately from its members.
+            addLayer( item->GetLayer() );
+            break;
+
+        case PCB_VIA_T:
+        {
+            const PCB_VIA* via = static_cast<const PCB_VIA*>( item );
+            PCB_LAYER_ID   start, end;
+
+            via->LayerPair( &start, &end );
+            addLayer( start );
+            addLayer( end );
+            addPadstackLayers( via->Padstack() );
+            break;
+        }
+
+        case PCB_FOOTPRINT_T:
+        {
+            const FOOTPRINT* fp = static_cast<const FOOTPRINT*>( item );
+            addLayer( fp->GetLayer() );
+            usedLayers |= fp->GetPrivateLayers();
+
+            if( fp->GetStackupMode() == FOOTPRINT_STACKUP::CUSTOM_LAYERS )
+                usedLayers |= fp->GetStackupLayers();
+
+            break;
+        }
+
+        case PCB_PAD_T:
+        {
+            const PAD* pad = static_cast<const PAD*>( item );
+            LSET       layers = pad->GetLayerSet();
+
+            if( layers.ContainsAll( LSET::InternalCuMask() ) )
+                layers.ClearCopperLayers();
+
+            usedLayers |= layers;
+            addPadstackLayers( pad->Padstack() );
+            break;
+        }
+
+        case PCB_ZONE_T:
+        {
+            const ZONE* zone = static_cast<const ZONE*>( item );
+            LSET        layers = zone->GetLayerSet();
+
+            // Board zones and wildcard keepouts cover the corresponding layers on the target.
+            if( ( !zone->GetParentFootprint() || zone->GetIsRuleArea() )
+                && layers.ContainsAll( LSET::InternalCuMask() ) )
+            {
+                layers.ClearCopperLayers();
+            }
+
+            // A disabled layer can retain a saved fill outside the zone's layer set.
+            for( PCB_LAYER_ID layer : zone->GetFilledLayers() )
+            {
+                if( highLayers.Contains( layer ) && zone->GetFilledPolysList( layer )->OutlineCount() )
+                    usedLayers.set( layer );
+            }
+
+            usedLayers |= layers;
+            addZoneProperties( zone->LayerProperties() );
+            break;
+        }
+
+        default:
+            usedLayers |= item->GetLayerSet();
+            break;
+        }
+    };
+
+    visitBoardItems( aBoard, addItemLayers );
+    return ( usedLayers & highLayers ).count();
 }
 
 
@@ -2010,24 +2161,6 @@ static void visitFootprintItems( const FOOTPRINT* aFootprint, const std::functio
 }
 
 
-static void visitBoardItems( const BOARD* aBoard, const std::function<void( BOARD_ITEM* )>& aVisit )
-{
-    aBoard->RunOnChildren( aVisit, RECURSE_MODE::RECURSE );
-
-    // Generators are omitted by BOARD::RunOnChildren.
-    for( PCB_GENERATOR* generator : aBoard->Generators() )
-    {
-        aVisit( generator );
-
-        for( const auto& [name, item] : generator->GetTemplateItems() )
-        {
-            if( item )
-                aVisit( const_cast<BOARD_ITEM*>( item ) );
-        }
-    }
-}
-
-
 static int countCustomProperties( const BOARD* aBoard )
 {
     int count = 0;
@@ -2919,6 +3052,9 @@ static std::vector<BOARD_RULE> boardRules()
         { VER_ZONE_DEFAULTS, DOWNGRADE_BUCKET::DROP, _( "Per-zone layer properties" ),
           _( "The per-layer overrides are removed." ),
           countZoneLayerProperties, dropZoneLayerProperties, dropZoneLayerPropertiesFp },
+        { VER_64_COPPER_LAYERS, DOWNGRADE_BUCKET::BLOCK, _( "Copper layers past In30.Cu" ),
+          _( "The target supports at most 32 copper layers. Board items can still use a disabled layer." ),
+          countHighCopperLayers, nullptr },
         { VER_USER_LAYERS, DOWNGRADE_BUCKET::BLOCK, _( "User layers past User_9" ),
           _( "The target supports only 9 user layers." ),
           countHighUserLayers, nullptr },

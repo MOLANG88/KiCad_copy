@@ -1791,9 +1791,14 @@ int ALTIUM_PCB::HelperGetPadstackLayerIndex( PCB_LAYER_ID aLayer ) const
     // Footprint libraries carry no stackup, so Altium's mid layer N is KiCad's In N
     if( m_padstackLayerIndex.empty() )
     {
+        // B_Cu's ordinal follows KiCad's copper layer maximum, not Altium's fixed slots
+        if( aLayer == B_Cu )
+            return ALTIUM_BOTTOM_PADSTACK_IDX;
+
         size_t ordinal = CopperLayerToOrdinal( aLayer );
 
-        return ordinal < ALTIUM_PADSTACK_IDX_COUNT ? static_cast<int>( ordinal ) : -1;
+        // Mid layers stop at In30_Cu, the next slot is Altium's bottom layer
+        return ordinal < ALTIUM_BOTTOM_PADSTACK_IDX ? static_cast<int>( ordinal ) : -1;
     }
 
     auto it = m_padstackLayerIndex.find( aLayer );
@@ -4776,6 +4781,16 @@ void ALTIUM_PCB::ConvertPads6ToBoardItem( const APAD6& aElem )
 }
 
 
+static LSET altiumPadstackCopperLayers( const BOARD* aBoard )
+{
+    if( aBoard )
+        return aBoard->GetEnabledLayers() & LSET::AllCuMask();
+
+    // A footprint library has only the signal slots in the source padstack.
+    return LSET::AllCuMask( ALTIUM_PADSTACK_IDX_COUNT );
+}
+
+
 PAD* ALTIUM_PCB::ConvertVias6ToFootprintItem( FOOTPRINT* aFootprint, const AVIA6& aElem )
 {
     std::unique_ptr<PAD> pad = std::make_unique<PAD>( aFootprint );
@@ -4818,12 +4833,7 @@ PAD* ALTIUM_PCB::ConvertVias6ToFootprintItem( FOOTPRINT* aFootprint, const AVIA6
     {
         pad->Padstack().SetMode( PADSTACK::MODE::CUSTOM );
 
-        LSET cuLayers = LSET::AllCuMask();
-
-        if( m_board )
-            cuLayers &= m_board->GetEnabledLayers();
-
-        for( PCB_LAYER_ID layer : cuLayers )
+        for( PCB_LAYER_ID layer : altiumPadstackCopperLayers( aFootprint->GetBoard() ) )
         {
             int altiumIdx = HelperGetPadstackLayerIndex( layer );
 
@@ -5168,7 +5178,7 @@ void ALTIUM_PCB::ConvertPads6ToFootprintItemOnCopper( FOOTPRINT* aFootprint, con
         setCopperGeometry( B_Cu, HelperGetPadstackLayerIndex( B_Cu ), aElem.botshape,
                            aElem.botsize );
 
-        LSET intLayers = aFootprint->BoardLayerSet() & LSET::InternalCuMask();
+        LSET intLayers = altiumPadstackCopperLayers( aFootprint->GetBoard() ) & LSET::InternalCuMask();
 
         for( PCB_LAYER_ID layer : intLayers )
         {
