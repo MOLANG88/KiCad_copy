@@ -27,10 +27,12 @@
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <pcbnew/pcb_io/easyedapro/pcb_io_easyedapro.h>
+#include <pcbnew/pcb_io/easyedapro/pcb_io_easyedapro_parser.h>
 
 #include <board.h>
 #include <footprint.h>
 #include <pad.h>
+#include <pcb_track.h>
 #include <zone.h>
 
 #include <cstdlib>
@@ -84,6 +86,36 @@ BOOST_AUTO_TEST_CASE( PolygonPadImport )
     // Check that primitives were added to the custom pads
     BOOST_CHECK( !pad9->GetPrimitives( PADSTACK::ALL_LAYERS ).empty() );
     BOOST_CHECK( !pad10->GetPrimitives( PADSTACK::ALL_LAYERS ).empty() );
+}
+
+
+BOOST_AUTO_TEST_CASE( TracksOnFinalInnerLayers )
+{
+    BOARD                                          board;
+    PCB_IO_EASYEDAPRO_PARSER                       parser( &board, nullptr );
+    std::map<wxString, std::unique_ptr<FOOTPRINT>> footprints;
+    std::vector<nlohmann::json>                    lines;
+
+    // Generated from the Yuzuki Chameleon layer table with all 32 inner layers enabled.
+    for( int inner = 1; inner <= 32; ++inner )
+    {
+        lines.push_back( { "LAYER", 14 + inner, "SIGNAL", "Inner" + std::to_string( inner ), 3,
+                           "#999966", 1, "#999966", 1 } );
+    }
+
+    lines.push_back( { "LINE", "e1", 0, "GND", 45, 0, 0, 100, 0, 12, 0 } );
+    lines.push_back( { "LINE", "e2", 0, "VCC", 46, 0, 0, 100, 0, 12, 0 } );
+    parser.ParseBoard( &board, {}, footprints, {}, {}, lines, wxEmptyString );
+
+    BOOST_CHECK_EQUAL( board.GetCopperLayerCount(), 34 );
+    std::map<wxString, PCB_LAYER_ID> trackLayers;
+
+    for( PCB_TRACK* track : board.Tracks() )
+        trackLayers.emplace( track->GetNetname(), track->GetLayer() );
+
+    BOOST_REQUIRE_EQUAL( trackLayers.size(), 2 );
+    BOOST_CHECK_EQUAL( trackLayers.at( wxS( "GND" ) ), In31_Cu );
+    BOOST_CHECK_EQUAL( trackLayers.at( wxS( "VCC" ) ), In32_Cu );
 }
 
 

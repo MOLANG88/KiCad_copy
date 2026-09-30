@@ -131,6 +131,12 @@ PCB_IO_EASYEDAPRO_PARSER::~PCB_IO_EASYEDAPRO_PARSER()
 
 PCB_LAYER_ID PCB_IO_EASYEDAPRO_PARSER::LayerToKi( int aLayer )
 {
+    constexpr int firstInner = 15;
+    constexpr int lastInner = 46;
+
+    if( aLayer >= firstInner && aLayer <= lastInner )
+        return InnerCopperLayer( aLayer - firstInner + 1 );
+
     switch( aLayer )
     {
     case 1: return F_Cu;
@@ -147,37 +153,6 @@ PCB_LAYER_ID PCB_IO_EASYEDAPRO_PARSER::LayerToKi( int aLayer )
     case 12: return Edge_Cuts; // Multi
     case 13: return Dwgs_User;
     case 14: return Eco2_User;
-
-    case 15: return In1_Cu;
-    case 16: return In2_Cu;
-    case 17: return In3_Cu;
-    case 18: return In4_Cu;
-    case 19: return In5_Cu;
-    case 20: return In6_Cu;
-    case 21: return In7_Cu;
-    case 22: return In8_Cu;
-    case 23: return In9_Cu;
-    case 24: return In10_Cu;
-    case 25: return In11_Cu;
-    case 26: return In12_Cu;
-    case 27: return In13_Cu;
-    case 28: return In14_Cu;
-    case 29: return In15_Cu;
-    case 30: return In16_Cu;
-    case 31: return In17_Cu;
-    case 32: return In18_Cu;
-    case 33: return In19_Cu;
-    case 34: return In20_Cu;
-    case 35: return In21_Cu;
-    case 36: return In22_Cu;
-    case 37: return In23_Cu;
-    case 38: return In24_Cu;
-    case 39: return In25_Cu;
-    case 40: return In26_Cu;
-    case 41: return In27_Cu;
-    case 42: return In28_Cu;
-    case 43: return In29_Cu;
-    case 44: return In30_Cu;
 
     case 48: return F_Fab; // Component shape layer
     case 49: return F_Fab; // Component marking
