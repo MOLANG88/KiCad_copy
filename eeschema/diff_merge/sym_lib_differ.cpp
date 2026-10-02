@@ -28,11 +28,20 @@
 #include <lib_symbol.h>
 #include <sch_item.h>
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr_lib_cache.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr_parser.h>
+#include <richio.h>
+#include <symbol_library_common.h>
 
 #include <wx/arrstr.h>
 #include <wx/filename.h>
+#include <wx/intl.h>
 
 #include <algorithm>
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
 
 
 namespace KICAD_DIFF
@@ -103,6 +112,98 @@ SYM_LIB_DIFFER::LoadLibrary( const wxString& aPath )
     }
 
     return { std::move( owners ), std::move( map ) };
+}
+
+
+std::pair<std::vector<std::unique_ptr<LIB_SYMBOL>>, SYM_LIB_DIFFER::SYMBOL_MAP>
+SYM_LIB_DIFFER::LoadLibraryText( const std::string& aText )
+{
+    LIB_SYMBOL_MAP                           symbols;
+    std::vector<std::unique_ptr<LIB_SYMBOL>> owners;
+    SYMBOL_MAP                               map;
+    STRING_LINE_READER                       reader( aText, wxS( "library" ) );
+    SCH_IO_KICAD_SEXPR_PARSER                parser( &reader );
+
+    try
+    {
+        parser.ParseLib( symbols );
+    }
+    catch( ... )
+    {
+        for( auto& [name, symbol] : symbols )
+            delete symbol;
+
+        throw;
+    }
+
+    for( auto& [name, symbol] : symbols )
+    {
+        map[symbol->GetName()] = symbol;
+        owners.emplace_back( symbol );
+    }
+
+    if( !parser.GetParseWarnings().empty() )
+        THROW_IO_ERROR( parser.GetParseWarnings().front() );
+
+    // An unlinked symbol would flatten without its parent's pins and fields
+    for( auto& [name, symbol] : symbols )
+    {
+        if( symbol->GetParentName().IsEmpty() )
+            continue;
+
+        auto it = symbols.find( symbol->GetParentName() );
+
+        if( it == symbols.end() )
+            THROW_IO_ERROR( wxString::Format( _( "No parent for extended symbol %s" ), name ) );
+
+        symbol->SetParent( it->second );
+    }
+
+    return { std::move( owners ), std::move( map ) };
+}
+
+
+namespace
+{
+    std::string flatText( const LIB_SYMBOL* aSymbol )
+    {
+        std::unique_ptr<LIB_SYMBOL> flat = aSymbol->Flatten();
+        STRING_FORMATTER            formatter;
+
+        SCH_IO_KICAD_SEXPR_LIB_CACHE::SaveSymbol( flat.get(), formatter );
+        return formatter.GetString();
+    }
+} // namespace
+
+
+bool SYM_LIB_DIFFER::DiffLibraryText( const std::string& aBefore, const std::string& aAfter, DOCUMENT_DIFF* aDiff )
+{
+    using LOADED = std::pair<std::vector<std::unique_ptr<LIB_SYMBOL>>, SYMBOL_MAP>;
+
+    try
+    {
+        LOADED before = aBefore.empty() ? LOADED() : LoadLibraryText( aBefore );
+        LOADED after = aAfter.empty() ? LOADED() : LoadLibraryText( aAfter );
+
+        // Not Diff(), whose property deltas read the property manager the GUI thread rebuilds
+        *aDiff = DiffLibraryByName(
+                before.second, after.second, wxEmptyString, wxS( "kicad_sym" ), wxS( "LIB_SYMBOL" ), OPTIONS(),
+                []( const LIB_SYMBOL* )
+                {
+                    return BOX2I();
+                },
+                []( const LIB_SYMBOL* aA, const LIB_SYMBOL* aB )
+                {
+                    // Flattening drops the parent, and a symbol moved to an equal parent still changed
+                    return aA->GetParentName() != aB->GetParentName() || flatText( aA ) != flatText( aB );
+                } );
+
+        return true;
+    }
+    catch( const IO_ERROR& )
+    {
+        return false;
+    }
 }
 
 
@@ -217,15 +318,120 @@ DOCUMENT_DIFF SYM_LIB_DIFFER::Diff()
 bool SYM_LIB_DIFFER::MergeKeepsBothSides( const SYMBOL_MAP& aAncestor, const SYMBOL_MAP& aOurs,
                                           const SYMBOL_MAP& aTheirs, const SYMBOL_MAP& aMerged )
 {
+    std::set<wxString> settled;
+
+    for( const auto& [name, ours] : aOurs )
+    {
+        auto theirs = aTheirs.find( name );
+        auto merged = aMerged.find( name );
+
+        if( theirs == aTheirs.end() || merged == aMerged.end() )
+            continue;
+
+        const std::string text = SavedSymbolText( *ours );
+
+        // Both sides made the same edit, which reads as nothing applied against something wanted
+        if( SavedSymbolText( *theirs->second ) == text && SavedSymbolText( *merged->second ) == text )
+            settled.insert( name );
+    }
+
+    auto unsettled = [&]( const SYMBOL_MAP& aSide )
+    {
+        SYMBOL_MAP out;
+
+        for( const auto& [name, symbol] : aSide )
+        {
+            if( !settled.contains( name ) )
+                out.emplace( name, symbol );
+        }
+
+        return out;
+    };
+
+    // A settled symbol normalizes to its merged state and every other symbol to its ancestor
+    auto normalizedFrom = [&]( const wxString& aName ) -> const LIB_SYMBOL*
+    {
+        const SYMBOL_MAP& from = settled.contains( aName ) ? aMerged : aAncestor;
+        auto              it = from.find( aName );
+
+        return it == from.end() ? nullptr : it->second;
+    };
+
+    // The names aName derives from once normalized, nearest first, stopping at a loop
+    auto lineage = [&]( const wxString& aName )
+    {
+        std::vector<wxString> chain;
+
+        for( const LIB_SYMBOL* symbol = normalizedFrom( aName ); symbol && !symbol->GetParentName().IsEmpty(); )
+        {
+            const wxString& parent = symbol->GetParentName();
+
+            if( parent == aName || std::ranges::find( chain, parent ) != chain.end() )
+                break;
+
+            chain.push_back( parent );
+            symbol = normalizedFrom( parent );
+        }
+
+        return chain;
+    };
+
+    // A symbol derived from a settled one inherits its merged state, not the ancestor's, so the settled names,
+    // what derives from them and what they derive from are copied and relinked to each other
+    std::set<wxString> copied;
+
+    auto isSettled = [&]( const wxString& aName )
+    {
+        return settled.contains( aName );
+    };
+
+    for( const auto& [name, symbol] : aAncestor )
+    {
+        const std::vector<wxString> chain = lineage( name );
+
+        if( isSettled( name ) || std::ranges::any_of( chain, isSettled ) )
+        {
+            copied.insert( name );
+            copied.insert( chain.begin(), chain.end() );
+        }
+    }
+
+    std::vector<std::unique_ptr<LIB_SYMBOL>> owned;
+    std::map<wxString, LIB_SYMBOL*>          copies;
+    SYMBOL_MAP                               normalized = aAncestor;
+
+    for( const wxString& name : copied )
+    {
+        if( !aAncestor.contains( name ) )
+            continue;
+
+        owned.push_back( std::make_unique<LIB_SYMBOL>( *normalizedFrom( name ) ) );
+        copies[name] = owned.back().get();
+        normalized[name] = owned.back().get();
+    }
+
+    for( const auto& [name, copy] : copies )
+    {
+        auto parent = copies.find( copy->GetParentName() );
+
+        if( !copy->GetParentName().IsEmpty() && parent != copies.end() )
+            copy->SetParent( parent->second );
+    }
+
+    const SYMBOL_MAP ancestor = unsettled( normalized );
+    const SYMBOL_MAP merged = unsettled( aMerged );
+
     auto carries = [&]( const SYMBOL_MAP& aSide, const SYMBOL_MAP& aOther )
     {
+        const SYMBOL_MAP                 side = unsettled( aSide );
+        const SYMBOL_MAP                 other = unsettled( aOther );
         std::map<KIID_PATH, ITEM_CHANGE> applied;
         std::map<KIID_PATH, ITEM_CHANGE> wanted;
 
-        for( ITEM_CHANGE& change : SYM_LIB_DIFFER( aSide, aMerged ).Diff().changes )
+        for( ITEM_CHANGE& change : SYM_LIB_DIFFER( side, merged ).Diff().changes )
             applied.emplace( change.id, std::move( change ) );
 
-        for( ITEM_CHANGE& change : SYM_LIB_DIFFER( aAncestor, aOther ).Diff().changes )
+        for( ITEM_CHANGE& change : SYM_LIB_DIFFER( ancestor, other ).Diff().changes )
             wanted.emplace( change.id, std::move( change ) );
 
         // The bounding box only places a change on screen, and comes from a different symbol on each side
