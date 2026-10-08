@@ -263,6 +263,7 @@ bool SYMBOL_EDITOR_CONTROL::Init()
         ctxMenu.AddItem( SCH_ACTIONS::saveSymbolAs,             symbolSelectedCondition, 10 );
         ctxMenu.AddItem( SCH_ACTIONS::saveSymbolCopyAs,         symbolSelectedCondition, 10 );
         ctxMenu.AddItem( ACTIONS::revert,                       symbolSelectedCondition || libInferredCondition, 10 );
+        libraryTreeTool->AddTeamLibraryMenuItems( this, *m_menu, ctxMenu, libSelectedCondition );
 
         ctxMenu.AddSeparator( 20 );
         ctxMenu.AddItem( SCH_ACTIONS::importSymbol,             libInferredCondition, 20 );
@@ -679,6 +680,10 @@ int SYMBOL_EDITOR_CONTROL::RenameSymbol( const TOOL_EVENT& aEvent )
     if( !libSymbol )
         return 0;
 
+    // Renaming changes a released symbol, and replacing one removes it
+    if( editFrame->RefuseReleasedChange( libName, oldName ) || editFrame->RefuseReleasedChange( libName, newName ) )
+        return 0;
+
     // Renaming the current symbol
     const bool isCurrentSymbol = editFrame->IsCurrentSymbol( libId );
     bool       overwritingCurrentSymbol = false;
@@ -977,6 +982,9 @@ int SYMBOL_EDITOR_CONTROL::FlattenSymbol( const TOOL_EVENT& aEvent )
         wxMessageBox( _( "No symbol to flatten" ) );
         return 0;
     }
+
+    if( editFrame->RefuseReleasedChange( symId.GetLibNickname(), symId.GetLibItemName() ) )
+        return 0;
 
     const LIB_SYMBOL*           symbol = libMgr.GetBufferedSymbol( symId.GetLibItemName(), symId.GetLibNickname() );
     std::unique_ptr<LIB_SYMBOL> flatSymbol = symbol->Flatten();
