@@ -3348,6 +3348,10 @@ static EMBEDDED_FILES* findEmbeddedStore( const wxString& aName, FOOTPRINT* aFoo
 
 int PCB_CONTROL::ExtractEmbedded3DModels( const TOOL_EVENT& aEvent )
 {
+    // ${KIPRJMOD} means nothing in the footprint editor.
+    if( !m_frame->IsType( FRAME_PCB_EDITOR ) )
+        return 0;
+
     BOARD* brd = board();
 
     if( !brd )
