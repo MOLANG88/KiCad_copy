@@ -32,6 +32,9 @@ add_executable( qa_mdw_git
     test_mdw_git_baseline.cpp
     test_mdw_git_claims.cpp
     test_mdw_git_credentials.cpp
+    test_mdw_git_library_requirements.cpp
+    test_mdw_git_library_rows.cpp
+    test_mdw_git_library_sync.cpp
     test_mdw_git_permissions.cpp
     test_mdw_git_release.cpp
     test_mdw_reply_checks.cpp
