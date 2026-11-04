@@ -281,6 +281,12 @@ public:
 
     bool RulesValid() { return m_rulesValid; }
 
+    /**
+     * @return the rules loaded by InitEngine(), implicit ones (see DRC_RULE::IsImplicit())
+     *         included.
+     */
+    const std::vector<std::shared_ptr<DRC_RULE>>& GetRules() const { return m_rules; }
+
     void ReportViolation( const std::shared_ptr<DRC_ITEM>& aItem, const VECTOR2I& aPos,
                           int aMarkerLayer, const std::function<void( PCB_MARKER* )>& aPathGenerator = {} );
 

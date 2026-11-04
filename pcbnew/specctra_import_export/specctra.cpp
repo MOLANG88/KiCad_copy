@@ -46,6 +46,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 #include <build_version.h>
 
@@ -1699,13 +1700,16 @@ void SPECCTRA_DB::doREGION( REGION* growth )
 
 void SPECCTRA_DB::doCLASS_CLASS( CLASS_CLASS* growth )
 {
-    T       tok = NextTok();
+    T       tok;
 
-    if( tok != T_LEFT )
-        Expecting( T_LEFT );
-
+    // Each child is its own (...) list: a class_class holds a classes list and its rules.
     while( ( tok = NextTok() ) != T_RIGHT )
     {
+        if( tok != T_LEFT )
+            Expecting( T_LEFT );
+
+        tok = NextTok();
+
         switch( tok )
         {
         case T_classes:
@@ -1998,6 +2002,25 @@ void SPECCTRA_DB::doPLACE( PLACE* growth )
             growth->m_part_number = CurText();
             NeedRIGHT();
             break;
+
+        case T_pin:
+        {
+            // (pin <pin_id> (clearance_class <class_id>)); clearance_class is not a keyword.
+            NeedSYMBOLorNUMBER();
+            std::string pinId = CurText();
+
+            NeedLEFT();
+            NeedSYMBOL();
+
+            if( strcmp( CurText(), "clearance_class" ) != 0 )
+                Expecting( "clearance_class" );
+
+            NeedSYMBOLorNUMBER();
+            growth->m_pin_clearance_classes.emplace_back( pinId, CurText() );
+            NeedRIGHT();
+            NeedRIGHT();
+            break;
+        }
 
         default:
             Unexpected( tok );
@@ -2847,6 +2870,13 @@ void SPECCTRA_DB::doNETWORK( NETWORK* growth )
             myclass = new CLASS( growth );
             growth->m_classes.push_back( myclass );
             doCLASS( myclass );
+            break;
+
+        case T_class_class:
+            CLASS_CLASS* classClass;
+            classClass = new CLASS_CLASS( growth, T_class_class );
+            growth->m_class_classes.push_back( classClass );
+            doCLASS_CLASS( classClass );
             break;
 
         default:
@@ -4029,6 +4059,15 @@ void PLACE::Format( OUTPUTFORMATTER* out, int nestLevel )
             quote = out->GetQuoteChar( m_part_number.c_str() );
             out->Print( nestLevel + 1, "(PN %s%s%s)\n", quote, m_part_number.c_str(), quote );
         }
+
+        for( const auto& [pinId, classId] : m_pin_clearance_classes )
+        {
+            const char* pinQuote = out->GetQuoteChar( pinId.c_str() );
+            const char* classQuote = out->GetQuoteChar( classId.c_str() );
+
+            out->Print( nestLevel + 1, "(pin %s%s%s (clearance_class %s%s%s))\n", pinQuote,
+                        pinId.c_str(), pinQuote, classQuote, classId.c_str(), classQuote );
+        }
     }
     else
     {
@@ -4042,6 +4081,15 @@ void PLACE::Format( OUTPUTFORMATTER* out, int nestLevel )
         {
             quote = out->GetQuoteChar( m_part_number.c_str() );
             out->Print( 0, "%s(PN %s%s%s)", space, quote, m_part_number.c_str(), quote );
+        }
+
+        for( const auto& [pinId, classId] : m_pin_clearance_classes )
+        {
+            const char* pinQuote = out->GetQuoteChar( pinId.c_str() );
+            const char* classQuote = out->GetQuoteChar( classId.c_str() );
+
+            out->Print( 0, " (pin %s%s%s (clearance_class %s%s%s))", pinQuote, pinId.c_str(),
+                        pinQuote, classQuote, classId.c_str(), classQuote );
         }
     }
 
