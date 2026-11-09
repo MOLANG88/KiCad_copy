@@ -2237,7 +2237,7 @@ bool SegmentIntersectsBoard( const VECTOR2I& aP1, const VECTOR2I& aP2,
                    } );
     }
 
-    int GVSquared = aMinGrooveWidth * aMinGrooveWidth;
+    int64_t GVSquared = int64_t( aMinGrooveWidth ) * aMinGrooveWidth;
 
     for( size_t i = 0; i < intersectionPoints.size(); i += 2 )
     {
