@@ -229,17 +229,13 @@ void WX_VIEW_CONTROLS::onMotion( wxMouseEvent& aEvent )
 
     ( *m_MotionEventCounter )++;
 
-    // Motion proves the pointer is here, unless captured (motion keeps coming after leaving)
-    // or this is onLeave()'s own reentrant call.
-    if( !aEvent.Leaving() && !m_parentPanel->HasCapture()
-            && !m_parentPanel->IsCursorInCanvas() )
-    {
-        m_parentPanel->SetCursorInCanvas( true );
-        m_parentPanel->NotifyOtherCanvasesCursorEntered();
-    }
-
     // Because Weston sends a motion event to previous location after warping the pointer
     wxPoint mouseRel = m_parentPanel->ScreenToClient( KIPLATFORM::UI::GetMousePosition() );
+
+    // Enter and leave events can be dropped, so trust motion inside the canvas. onLeave() reuses
+    // this handler with its own leave event
+    if( !aEvent.Leaving() && m_parentPanel->GetClientRect().Contains( mouseRel ) )
+        m_parentPanel->SetCursorInCanvas( true );
 
     bool     isAutoPanning = false;
     int      x = mouseRel.x;
@@ -638,9 +634,7 @@ void WX_VIEW_CONTROLS::onButton( wxMouseEvent& aEvent )
             if( !m_settings.m_cursorCaptured && m_parentPanel->HasCapture() )
                 m_parentPanel->ReleaseMouse();
 
-            // Leave events were ignored during the capture, so set the state here.
-            m_parentPanel->SetCursorInCanvas(
-                    m_parentPanel->GetClientRect().Contains( aEvent.GetPosition() ) );
+            syncCursorInCanvas();
 #endif
         }
 
@@ -687,11 +681,6 @@ void WX_VIEW_CONTROLS::onLeave( wxMouseEvent& aEvent )
     if( m_parentPanel->HasCapture() )
         return;
 
-#if !defined USE_MOUSE_CAPTURE
-    if( m_parentPanel->IsSuspiciousLeaveAfterEnter( aEvent.GetPosition() ) )
-        return;
-#endif
-
     m_parentPanel->SetCursorInCanvas( false );
 
 #if !defined USE_MOUSE_CAPTURE
@@ -708,6 +697,18 @@ void WX_VIEW_CONTROLS::onCaptureLost( wxMouseEvent& aEvent )
     // Note: One cannot call m_parentPanel->CaptureMouse() twice, this is not accepted
     // by wxWidgets (MSW specific) so we need this guard
     m_parentPanel->m_MouseCapturedLost = true;
+
+    syncCursorInCanvas();
+}
+
+
+void WX_VIEW_CONTROLS::syncCursorInCanvas()
+{
+    wxPoint mouseRel = m_parentPanel->ScreenToClient( KIPLATFORM::UI::GetMousePosition() );
+
+    // Leave events are ignored while captured, so the capture holder keeps the cursor
+    m_parentPanel->SetCursorInCanvas( m_parentPanel->HasCapture()
+                                      || m_parentPanel->GetClientRect().Contains( mouseRel ) );
 }
 
 
@@ -922,6 +923,8 @@ void WX_VIEW_CONTROLS::CaptureCursor( bool aEnabled )
 
         // Mouse is released, calling CaptureMouse() is allowed now:
         m_parentPanel->m_MouseCapturedLost = true;
+
+        syncCursorInCanvas();
     }
 #endif
     VIEW_CONTROLS::CaptureCursor( aEnabled );
@@ -937,6 +940,8 @@ void WX_VIEW_CONTROLS::CancelDrag()
 #if defined USE_MOUSE_CAPTURE
         if( !m_settings.m_cursorCaptured && m_parentPanel->HasCapture() )
             m_parentPanel->ReleaseMouse();
+
+        syncCursorInCanvas();
 #endif
     }
 

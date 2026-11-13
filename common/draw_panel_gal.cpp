@@ -199,9 +199,8 @@ void EDA_DRAW_PANEL_GAL::presentFrame()
 }
 
 
-EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWindowId,
-                                        const wxPoint& aPosition, const wxSize& aSize,
-                                        KIGFX::GAL_DISPLAY_OPTIONS& aOptions, GAL_TYPE aGalType ) :
+EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWindowId, const wxPoint& aPosition,
+                                        const wxSize& aSize, KIGFX::GAL_DISPLAY_OPTIONS& aOptions, GAL_TYPE aGalType ) :
         wxScrolledCanvas( aParentWindow, aWindowId, aPosition, aSize ),
         m_MouseCapturedLost( false ),
         m_parent( aParentWindow ),
@@ -210,6 +209,7 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
         m_drawingEnabled( false ),
         m_needIdleRefresh( false ),
         m_cursorInCanvas( false ),
+        m_cursorVisibilityDirty( false ),
         m_gal( nullptr ),
         m_view( nullptr ),
         m_painter( nullptr ),
@@ -356,39 +356,16 @@ void EDA_DRAW_PANEL_GAL::SetCursorInCanvas( bool aCursorInCanvas )
         return;
 
     m_cursorInCanvas = aCursorInCanvas;
+    m_cursorVisibilityDirty = true;
 
     if( m_gal )
         m_gal->SetCursorInCanvas( m_cursorInCanvas );
 
-    ForceRefresh();
-}
+    if( m_cursorInCanvas )
+        EDA_CURSOR_BROADCASTER::Instance().NotifyCursorEntered( this );
 
-
-bool EDA_DRAW_PANEL_GAL::IsSuspiciousLeaveAfterEnter( const wxPoint& aLeavePos ) const
-{
-    static constexpr long long SPURIOUS_LEAVE_WINDOW_MS = 100;
-    static constexpr int       SPURIOUS_LEAVE_RADIUS_SQ = 5 * 5;
-
-    if( m_lastEnterTime == std::chrono::steady_clock::time_point() )
-        return false;
-
-    long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::steady_clock::now() - m_lastEnterTime )
-                                  .count();
-
-    if( elapsedMs > SPURIOUS_LEAVE_WINDOW_MS )
-        return false;
-
-    int dx = aLeavePos.x - m_lastEnterPos.x;
-    int dy = aLeavePos.y - m_lastEnterPos.y;
-
-    return ( dx * dx + dy * dy ) <= SPURIOUS_LEAVE_RADIUS_SQ;
-}
-
-
-void EDA_DRAW_PANEL_GAL::NotifyOtherCanvasesCursorEntered()
-{
-    EDA_CURSOR_BROADCASTER::Instance().NotifyCursorEntered( this );
+    // Not ForceRefresh(), which would restart drawing on a canvas stopped for teardown
+    Refresh();
 }
 
 
@@ -753,7 +730,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
 
         VECTOR2D cursorPos = m_viewControls->GetCursorPosition();
         bool viewDirty = m_view->IsDirty();
-        bool cursorMoved = ( cursorPos != m_lastCursorPosition );
+        bool     cursorMoved = cursorPos != m_lastCursorPosition || m_cursorVisibilityDirty;
         bool hasPendingItemUpdates = m_view->HasPendingItemUpdates();
 
         // Skip all update work when nothing has changed since the previous frame.
@@ -802,6 +779,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
         }
 
         m_lastCursorPosition = cursorPos;
+        m_cursorVisibilityDirty = false;
 
         // A cursor move alone reuses the cached scene and skips the view traversal and upload
         const bool useOverlayFastPath = m_backend == GAL_TYPE_MODERN
@@ -1804,14 +1782,6 @@ void EDA_DRAW_PANEL_GAL::OnEvent( wxEvent& aEvent )
 
 void EDA_DRAW_PANEL_GAL::onEnter( wxMouseEvent& aEvent )
 {
-#if !defined __WXMSW__
-    m_lastEnterTime = std::chrono::steady_clock::now();
-    m_lastEnterPos = aEvent.GetPosition();
-
-    SetCursorInCanvas( true );
-    NotifyOtherCanvasesCursorEntered();
-#endif
-
     bool shouldSetFocus = m_stealsFocus
                           && !KIUI::IsInputControlFocused()                // Don't steal from input controls
                           && !KIUI::IsModalDialogFocused()                 // Don't steal from dialogs

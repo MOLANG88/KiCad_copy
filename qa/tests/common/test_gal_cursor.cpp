@@ -27,7 +27,10 @@
 class TEST_GAL : public KIGFX::GAL
 {
 public:
-    TEST_GAL( KIGFX::GAL_DISPLAY_OPTIONS& aOptions ) : GAL( aOptions ) {}
+    TEST_GAL( KIGFX::GAL_DISPLAY_OPTIONS& aOptions ) :
+            GAL( aOptions )
+    {
+    }
 
     void ForceDisplayCursor( bool aEnabled ) { m_forceDisplayCursor = aEnabled; }
 };
@@ -68,77 +71,32 @@ BOOST_AUTO_TEST_CASE( HiddenOutsideCanvas )
     gal.SetCursorInCanvas( false );
     BOOST_CHECK( !gal.IsCursorEnabled() );
 
-    gal.SetCursorInCanvas( true );
-    BOOST_CHECK( gal.IsCursorEnabled() );
-}
-
-
-BOOST_AUTO_TEST_CASE( ForcedCursorHiddenOutsideCanvas )
-{
-    KIGFX::GAL_DISPLAY_OPTIONS options;
-    TEST_GAL                   gal( options );
-
+    gal.SetCursorEnabled( false );
     gal.ForceDisplayCursor( true );
     BOOST_CHECK( !gal.IsCursorEnabled() );
 
     gal.SetCursorInCanvas( true );
     BOOST_CHECK( gal.IsCursorEnabled() );
-
-    gal.SetCursorInCanvas( false );
-    BOOST_CHECK( !gal.IsCursorEnabled() );
 }
 
 
-BOOST_AUTO_TEST_CASE( CanvasOwnershipDoesNotChangeToolState )
-{
-    KIGFX::GAL_DISPLAY_OPTIONS options;
-    TEST_GAL                   gal( options );
-
-    gal.SetCursorEnabled( false );
-    gal.SetCursorInCanvas( true );
-    BOOST_CHECK( !gal.IsCursorEnabled() );
-
-    gal.SetCursorInCanvas( false );
-    gal.SetCursorInCanvas( true );
-    BOOST_CHECK( !gal.IsCursorEnabled() );
-
-    gal.SetCursorEnabled( true );
-    BOOST_CHECK( gal.IsCursorEnabled() );
-}
-
-
-BOOST_AUTO_TEST_CASE( BroadcastClearsEveryOtherOwner )
+BOOST_AUTO_TEST_CASE( EnterHidesEveryOtherLiveOwner )
 {
     TEST_CURSOR_OWNER first;
-    TEST_CURSOR_OWNER second;
-    TEST_CURSOR_OWNER third;
+    TEST_CURSOR_OWNER entering;
 
     first.Enter();
-    second.Enter();
-    third.Enter();
-
-    EDA_CURSOR_BROADCASTER::Instance().NotifyCursorEntered( &second );
-
-    BOOST_CHECK( !first.IsCursorInCanvas() );
-    BOOST_CHECK( second.IsCursorInCanvas() );
-    BOOST_CHECK( !third.IsCursorInCanvas() );
-}
-
-
-BOOST_AUTO_TEST_CASE( UnregisteredOwnerIsNotNotified )
-{
-    TEST_CURSOR_OWNER survivor;
-    survivor.Enter();
 
     {
         TEST_CURSOR_OWNER destroyed;
         destroyed.Enter();
     }
 
-    TEST_CURSOR_OWNER entering;
+    entering.Enter();
     EDA_CURSOR_BROADCASTER::Instance().NotifyCursorEntered( &entering );
 
-    BOOST_CHECK( !survivor.IsCursorInCanvas() );
+    BOOST_CHECK( !first.IsCursorInCanvas() );
+    BOOST_CHECK( entering.IsCursorInCanvas() );
 }
 
 

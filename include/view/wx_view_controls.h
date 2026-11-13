@@ -139,6 +139,11 @@ private:
     void setState( STATE aNewState );
 
     /**
+     * Set the panel's cursor-in-canvas state from the pointer position after a capture change.
+     */
+    void syncCursorInCanvas();
+
+    /**
      * Compute new viewport settings while in autopanning mode.
      *
      * @param aEvent is an event to be processed and decide if autopanning should happen.

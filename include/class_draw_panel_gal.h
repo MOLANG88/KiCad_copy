@@ -181,28 +181,12 @@ public:
     /**
      * Set whether the mouse cursor is inside the drawing canvas.
      *
+     * Entering hides the cursor in every other canvas of the process, since the pointer can only
+     * be in one and some window systems never deliver the leave event.
+     *
      * @param aCursorInCanvas is true if the cursor is inside the canvas.
      */
     void SetCursorInCanvas( bool aCursorInCanvas );
-
-    /**
-     * Check whether a leave at \a aLeavePos is a duplicate of the last enter, not a real exit.
-     *
-     * Some compositors send an extra leave right after a genuine enter, same position, no
-     * real movement in between. A real leave always has elapsed time or a moved position.
-     *
-     * @param aLeavePos is the leave event's position, in client coordinates.
-     * @return true if the leave should be ignored.
-     */
-    bool IsSuspiciousLeaveAfterEnter( const wxPoint& aLeavePos ) const;
-
-    /**
-     * Hide the cursor in every other live #EDA_DRAW_PANEL_GAL in this process.
-     *
-     * Called on a genuine enter, since the pointer can only be in one canvas: fixes any
-     * other canvas whose leave was never delivered (e.g. covered by another window).
-     */
-    void NotifyOtherCanvasesCursorEntered();
 
     // EDA_CURSOR_OWNER interface, used by #EDA_CURSOR_BROADCASTER.
     bool IsCursorInCanvas() const override { return m_cursorInCanvas; }
@@ -486,10 +470,6 @@ protected:
     std::chrono::steady_clock::time_point m_lastRepaintEnd;   ///< Timestamp of the last repaint end
     wxTimer                               m_refreshTimer;     ///< Timer to prevent too-frequent refreshing
 
-    /// Time and position of the last enter, used by #IsSuspiciousLeaveAfterEnter.
-    std::chrono::steady_clock::time_point m_lastEnterTime;
-    wxPoint                               m_lastEnterPos;
-
     std::mutex               m_refreshMutex;     ///< Blocks multiple calls to the draw
 
     /// True if GAL is currently redrawing the view
@@ -511,7 +491,10 @@ protected:
     VECTOR2D                 m_lastCursorPosition;
 
     /// True while the mouse cursor is inside the drawing canvas
-    bool                     m_cursorInCanvas;
+    bool m_cursorInCanvas;
+
+    /// The cursor was shown or hidden since the last repaint
+    bool m_cursorVisibilityDirty;
 
     /// Interface for drawing objects on a 2D-surface
     KIGFX::GAL*              m_gal;
