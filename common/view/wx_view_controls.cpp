@@ -39,6 +39,7 @@
 #include <kiway.h>
 #include <kiplatform/ui.h>
 #include <wx/log.h>
+#include <wx/utils.h>
 
 #include <cmath>
 
@@ -681,7 +682,11 @@ void WX_VIEW_CONTROLS::onLeave( wxMouseEvent& aEvent )
     if( m_parentPanel->HasCapture() )
         return;
 
-    m_parentPanel->SetCursorInCanvas( false );
+    // A leave inside the client area while the pointer is still ours is a crossing into the GAL child
+    bool crossingIntoChild = m_parentPanel->GetClientRect().Contains( aEvent.GetPosition() ) && isPointerOverCanvas();
+
+    if( !crossingIntoChild )
+        m_parentPanel->SetCursorInCanvas( false );
 
 #if !defined USE_MOUSE_CAPTURE
     onMotion( aEvent );
@@ -704,11 +709,16 @@ void WX_VIEW_CONTROLS::onCaptureLost( wxMouseEvent& aEvent )
 
 void WX_VIEW_CONTROLS::syncCursorInCanvas()
 {
-    wxPoint mouseRel = m_parentPanel->ScreenToClient( KIPLATFORM::UI::GetMousePosition() );
-
     // Leave events are ignored while captured, so the capture holder keeps the cursor
-    m_parentPanel->SetCursorInCanvas( m_parentPanel->HasCapture()
-                                      || m_parentPanel->GetClientRect().Contains( mouseRel ) );
+    m_parentPanel->SetCursorInCanvas( m_parentPanel->HasCapture() || isPointerOverCanvas() );
+}
+
+
+bool WX_VIEW_CONTROLS::isPointerOverCanvas() const
+{
+    wxWindow* under = wxFindWindowAtPoint( KIPLATFORM::UI::GetMousePosition() );
+
+    return under && ( under == m_parentPanel || m_parentPanel->IsDescendant( under ) );
 }
 
 

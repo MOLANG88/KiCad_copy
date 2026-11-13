@@ -144,6 +144,11 @@ private:
     void syncCursorInCanvas();
 
     /**
+     * @return true if the window under the pointer is the panel or one of its children.
+     */
+    bool isPointerOverCanvas() const;
+
+    /**
      * Compute new viewport settings while in autopanning mode.
      *
      * @param aEvent is an event to be processed and decide if autopanning should happen.
