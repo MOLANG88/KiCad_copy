@@ -32,6 +32,9 @@
 
 #include <map>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <core/typeinfo.h>
 #include <geometry/shape_poly_set.h>
@@ -1760,6 +1763,9 @@ private:
     //-----</mutually exclusive>-------------
 
     std::string     m_part_number;
+
+    /// (pin_id, clearance class_id) of the pins which have their own clearance class.
+    std::vector<std::pair<std::string, std::string>> m_pin_clearance_classes;
 };
 
 
@@ -1956,6 +1962,7 @@ public:
         m_rotation = 0.0;
         m_isRotated = false;
         m_kiNetCode = 0;
+        m_kiPad = nullptr;
     }
 
     void SetRotation( double aRotation )
@@ -1992,6 +1999,9 @@ private:
     POINT           m_vertex;
 
     int             m_kiNetCode;      ///< KiCad netcode
+
+    /// KiCad pad, only valid while the board is being exported.
+    const PAD*      m_kiPad;
 };
 
 
@@ -2826,13 +2836,17 @@ public:
 
         for( CLASS& c : m_classes )
             c.Format( out, nestLevel );
+
+        for( CLASS_CLASS& classClass : m_class_classes )
+            classClass.Format( out, nestLevel );
     }
 
 private:
     friend class SPECCTRA_DB;
 
-    boost::ptr_vector<NET>   m_nets;
-    boost::ptr_vector<CLASS> m_classes;
+    boost::ptr_vector<NET>         m_nets;
+    boost::ptr_vector<CLASS>       m_classes;
+    boost::ptr_vector<CLASS_CLASS> m_class_classes;
 };
 
 
@@ -3762,6 +3776,23 @@ public:
     bool BuiltBoardOutlines( BOARD* aBoard  );
 
     /**
+     * Translate the clearances of the custom design rules into Specctra clearance classes.
+     *
+     * The rules are not parsed: the DRC engine evaluates them on the board items, and the nets
+     * and pads are grouped by the clearances they get.  Nets of a netclass which behave
+     * differently become separate classes, and pads which behave differently from their net
+     * (a rule on their footprint, a local clearance) get a pin clearance class.  Every class
+     * pair is then written as a class_class rule.  Parts of the rules that cannot be translated
+     * are reported as warnings.
+     *
+     * Nothing is changed when the board has no custom clearance rule.
+     *
+     * @note Must be called before FlipFOOTPRINTs(), on the board as the DRC sees it.
+     * @param aBoard The BOARD whose rules are translated.
+     */
+    void BuildClearanceClasses( BOARD* aBoard );
+
+    /**
      * Flip the footprints which are on the back side of the board to the front.
      */
     void FlipFOOTPRINTs( BOARD* aBoard );
@@ -3940,6 +3971,12 @@ private:
      */
     void exportNETCLASS( const NETCLASS* aNetClass, const BOARD* aBoard );
 
+    /**
+     * Export the classes built by BuildClearanceClasses() in place of the netclasses, with a
+     * class_class rule for every pair of them.
+     */
+    void exportClearanceClasses();
+
     //-----</FromBOARD>------------------------------------------------------
 
     //-----<FromSESSION>-----------------------------------------------------
@@ -3998,6 +4035,24 @@ private:
 
     /// we don't want ownership here permanently, so we don't use boost::ptr_vector
     std::vector<NET*>        m_nets;
+
+    /// A clearance class deduced from the custom design rules: a group of nets of a netclass,
+    /// or a class of pins.
+    struct CLEARANCE_CLASS
+    {
+        std::string              m_name;
+        const NETCLASS*          m_netclass = nullptr;  ///< Width and via source; nets only.
+        std::vector<std::string> m_netIds;              ///< Empty for a class of pins.
+    };
+
+    /// Filled by BuildClearanceClasses(); when empty the netclasses are exported as they are.
+    std::vector<CLEARANCE_CLASS>      m_clearanceClasses;
+
+    /// Clearance between two m_clearanceClasses, in KiCad internal units.
+    std::vector<std::vector<int>>     m_clearanceMatrix;
+
+    /// Clearance class name of the pads which need their own class.
+    std::map<const PAD*, std::string> m_padClearanceClass;
 
     /// specctra cu layers, 0 based index:
     int                      m_top_via_layer;

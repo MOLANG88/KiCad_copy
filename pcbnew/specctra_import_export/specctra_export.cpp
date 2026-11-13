@@ -30,9 +30,13 @@
 #include "specctra.h"
 
 #include <project/net_settings.h>
+#include <algorithm>
+#include <cstdint>
 #include <set>
 #include <map>
+#include <unordered_map>
 
+#include <wx/filename.h>
 #include <wx/log.h>
 
 #include <pcb_edit_frame.h>
@@ -45,7 +49,12 @@
 
 #include <board.h>
 #include <board_design_settings.h>
+#include <drc/drc_engine.h>
+#include <drc/drc_rule.h>
+#include <drc/drc_rule_condition.h>
 #include <footprint.h>
+#include <netclass.h>
+#include <netinfo.h>
 #include <pcb_shape.h>
 #include <pcb_track.h>
 #include <pad.h>
@@ -114,12 +123,19 @@ void ExportBoardToSpecctraFile( BOARD* aBoard, const wxString& aFullFilename, RE
     SPECCTRA_DB db;
 
     db.SetPCB( SPECCTRA_DB::MakePCB() );
+    db.SetReporter( aReporter );
 
     LOCALE_IO toggle; // Switch the locale to standard C
 
     // Build the board outlines *before* flipping footprints
     if( !db.BuiltBoardOutlines( aBoard ) )
         ReportWarning( aReporter, _( "Board outline is malformed. Run DRC for a full analysis." ) );
+
+    aBoard->SynchronizeNetsAndNetClasses( false );
+
+    // The design rules are evaluated on the board as the DRC sees it, so *before* flipping
+    // footprints: a rule may depend on the layer of a pad.
+    db.BuildClearanceClasses( aBoard );
 
     // DSN Images (=KiCad FOOTPRINTs and PADs) must be presented from the top view.  So we
     // temporarily flip any footprints which are on the back side of the board to the front,
@@ -128,7 +144,6 @@ void ExportBoardToSpecctraFile( BOARD* aBoard, const wxString& aFullFilename, RE
 
     try
     {
-        aBoard->SynchronizeNetsAndNetClasses( false );
         db.FromBOARD( aBoard );
         db.ExportPCB( aFullFilename, true );
         db.RevertFOOTPRINTs( aBoard );
@@ -746,6 +761,7 @@ IMAGE* SPECCTRA_DB::makeIMAGE( BOARD* aBoard, FOOTPRINT* aFootprint )
             }
 
             pin->m_kiNetCode = pad->GetNetCode();
+            pin->m_kiPad = pad;
 
             image->m_pins.push_back( pin );
 
@@ -1158,6 +1174,534 @@ static std::string sanitizeForDSNString( const wxString& aValue )
 }
 
 
+namespace
+{
+
+/// A board item whose clearances are classified: a stand-in track or via of a net, or a pad.
+struct CLEARANCE_ITEM
+{
+    BOARD_CONNECTED_ITEM* m_item;
+    bool                  m_isPad;
+    int                   m_netCode;
+    int                   m_cell;       ///< Index of the group of items with the same clearances
+};
+
+
+/**
+ * Return the DRC engine holding the design rules of \a aBoard: its own engine when it has one,
+ * else an engine loaded from the board's rules file.  Return nullptr if the rules are unusable.
+ */
+std::shared_ptr<DRC_ENGINE> getRulesEngine( BOARD* aBoard, REPORTER* aReporter )
+{
+    const wxString rulesPath = aBoard->GetDesignRulesPath();
+    const bool     hasRulesFile = !rulesPath.IsEmpty() && wxFileName::FileExists( rulesPath );
+
+    std::shared_ptr<DRC_ENGINE> engine = aBoard->GetDesignSettings().m_DRCEngine;
+
+    if( !engine )
+    {
+        if( !hasRulesFile )
+            return nullptr;
+
+        engine = std::make_shared<DRC_ENGINE>( aBoard, &aBoard->GetDesignSettings() );
+
+        try
+        {
+            engine->InitEngine( wxFileName( rulesPath ) );
+        }
+        catch( const IO_ERROR& ioe )
+        {
+            ReportWarning( aReporter,
+                           wxString::Format( _( "Custom design rules could not be loaded and are "
+                                                "not exported: %s" ),
+                                             ioe.What() ) );
+            return nullptr;
+        }
+    }
+
+    if( !engine->RulesValid() )
+    {
+        if( hasRulesFile )
+        {
+            ReportWarning( aReporter, _( "Custom design rules contain errors and are not exported. "
+                                         "Run DRC for a full analysis." ) );
+        }
+
+        return nullptr;
+    }
+
+    return engine;
+}
+
+
+/**
+ * Warn about the parts of the custom rules which cannot be translated into Specctra.
+ *
+ * @param aLayerDependent is set if a clearance rule may depend on the layer.
+ * @return true if at least one custom rule has a clearance constraint.
+ */
+bool checkCustomRules( const DRC_ENGINE& aEngine, REPORTER* aReporter, bool& aLayerDependent )
+{
+    bool hasClearance = false;
+
+    aLayerDependent = false;
+
+    for( const std::shared_ptr<DRC_RULE>& rule : aEngine.GetRules() )
+    {
+        if( rule->IsImplicit() )
+            continue;
+
+        bool clearance = false;
+        bool creepage = false;
+        bool other = false;
+
+        for( const DRC_CONSTRAINT& constraint : rule->m_Constraints )
+        {
+            if( constraint.m_Type == CLEARANCE_CONSTRAINT && constraint.m_Value.HasMin() )
+                clearance = true;
+            else if( constraint.m_Type == CREEPAGE_CONSTRAINT )
+                creepage = true;
+            else
+                other = true;
+        }
+
+        if( creepage )
+        {
+            ReportWarning( aReporter, wxString::Format( _( "Rule '%s': creepage has no Specctra "
+                                                           "equivalent and is not exported." ),
+                                                        rule->m_Name ) );
+        }
+
+        if( other )
+        {
+            ReportWarning( aReporter, wxString::Format( _( "Rule '%s': only minimum clearances are "
+                                                           "exported, its other constraints are "
+                                                           "not." ),
+                                                        rule->m_Name ) );
+        }
+
+        if( !clearance )
+            continue;
+
+        hasClearance = true;
+
+        if( rule->m_Condition && rule->m_Condition->HasGeometryDependentFunctions() )
+        {
+            ReportWarning( aReporter,
+                           wxString::Format( _( "Rule '%s': its condition depends on the position "
+                                                "of items, the exported clearances may differ "
+                                                "from DRC." ),
+                                             rule->m_Name ) );
+        }
+
+        // A layer clause, or a condition testing a layer (A.Layer, A.isOnLayer(), ...)
+        if( rule->m_LayerCondition != LSET::AllLayersMask()
+            || ( rule->m_Condition
+                 && rule->m_Condition->GetExpression().Lower().Contains( wxS( "layer" ) ) ) )
+        {
+            aLayerDependent = true;
+
+            ReportWarning( aReporter, wxString::Format( _( "Rule '%s': a layer-specific clearance "
+                                                           "is exported with its largest value on "
+                                                           "all layers." ),
+                                                        rule->m_Name ) );
+        }
+    }
+
+    return hasClearance;
+}
+
+
+/**
+ * Return the name to give in (pin <id> (clearance_class <name>)) for a pad of the class of pins
+ * \a aClassName.
+ *
+ * Freerouting (checked on master ceb56c6f) splits every class named in a class_class rule into
+ * per-item copies "<class>-wire", "-via", "-smd", "-pin" and "-area", and a class_class rule
+ * sets those copies, not the base class.  A pin looks its clearance class up by name, so it must
+ * name the copy for its own kind: "-smd" for a padstack on a single copper layer, "-pin"
+ * otherwise, which is how Freerouting tells them apart.  The base class keeps the values it was
+ * created with.  Every class of pins appears in a class_class rule, see exportClearanceClasses().
+ */
+std::string pinClearanceClassName( const std::string& aClassName, const PAD* aPad,
+                                   int aCopperLayerCount )
+{
+    const LSET copper = aPad->GetLayerSet() & LSET::AllCuMask( aCopperLayerCount );
+
+    return aClassName + ( copper.count() == 1 ? "-smd" : "-pin" );
+}
+
+} // namespace
+
+
+void SPECCTRA_DB::BuildClearanceClasses( BOARD* aBoard )
+{
+    m_clearanceClasses.clear();
+    m_clearanceMatrix.clear();
+    m_padClearanceClass.clear();
+
+    std::shared_ptr<DRC_ENGINE> engine = getRulesEngine( aBoard, m_reporter );
+    bool                        layerDependent = false;
+
+    if( !engine || !checkCustomRules( *engine, m_reporter, layerDependent ) )
+        return;
+
+    std::vector<PCB_LAYER_ID> layers;
+
+    if( layerDependent )
+    {
+        for( PCB_LAYER_ID layer : LSET::AllCuMask( aBoard->GetCopperLayerCount() ) )
+            layers.push_back( layer );
+    }
+    else
+    {
+        layers.push_back( F_Cu );
+    }
+
+    // Each net is represented by a stand-in track, not added to the board, which stands for its
+    // routing.  Tracks and pads define the classes; a stand-in via of each net is only checked
+    // against them, as Specctra gives vias the clearance class of their net.
+    std::vector<std::unique_ptr<PCB_TRACK>>  standIns;
+    std::vector<CLEARANCE_ITEM>              items;
+    std::vector<CLEARANCE_ITEM>              vias;
+    std::map<std::pair<bool, wxString>, int> initialCells;
+
+    auto initialCell =
+            [&]( bool aIsPad, const wxString& aNetclass ) -> int
+            {
+                const int next = static_cast<int>( initialCells.size() );
+                auto      key = std::make_pair( aIsPad, aNetclass );
+
+                return initialCells.try_emplace( std::move( key ), next ).first->second;
+            };
+
+    for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
+    {
+        if( net->GetNetCode() <= 0 )
+            continue;
+
+        const int cell = initialCell( false, net->GetNetClass()->GetName() );
+
+        standIns.push_back( std::make_unique<PCB_TRACK>( aBoard ) );
+        standIns.back()->SetFlags( ROUTER_TRANSIENT );
+        standIns.back()->SetNet( net );
+        items.push_back( { standIns.back().get(), false, net->GetNetCode(), cell } );
+
+        standIns.push_back( std::make_unique<PCB_VIA>( aBoard ) );
+        standIns.back()->SetFlags( ROUTER_TRANSIENT );
+        standIns.back()->SetNet( net );
+        vias.push_back( { standIns.back().get(), false, net->GetNetCode(), -1 } );
+    }
+
+    for( FOOTPRINT* footprint : aBoard->Footprints() )
+    {
+        for( PAD* pad : footprint->Pads() )
+        {
+            // Only the pads makeIMAGE() exports as pins.  Netless pads get their own initial
+            // group: Specctra puts them in no class of ours.
+            if( isRoundKeepout( pad ) || !( pad->GetLayerSet() & LSET::AllCuMask() ).any() )
+                continue;
+
+            const int      netCode = pad->GetNetCode();
+            const wxString netclass = netCode > 0 ? pad->GetNet()->GetNetClass()->GetName()
+                                                  : wxString();
+
+            items.push_back( { pad, true, netCode, initialCell( true, netclass ) } );
+        }
+    }
+
+    // The clearance the DRC requires between two items, with the rule which sets it.  Evaluated
+    // on the layers both items are on, keeping the largest value; items without a common layer
+    // never meet, any layer will do for them.
+    auto evaluate =
+            [&]( const CLEARANCE_ITEM& aA,
+                 const CLEARANCE_ITEM& aB ) -> std::pair<int, const DRC_RULE*>
+            {
+                int             worst = -1;
+                const DRC_RULE* source = nullptr;
+
+                for( bool requireLayer : { true, false } )
+                {
+                    for( PCB_LAYER_ID layer : layers )
+                    {
+                        for( const CLEARANCE_ITEM* item : { &aA, &aB } )
+                        {
+                            if( item->m_item->Type() == PCB_TRACE_T )
+                                item->m_item->SetLayer( layer );
+                        }
+
+                        const bool onLayer = aA.m_item->IsOnLayer( layer )
+                                             && aB.m_item->IsOnLayer( layer );
+
+                        if( requireLayer && !onLayer )
+                            continue;
+
+                        DRC_CONSTRAINT constraint;
+
+                        constraint = engine->EvalRules( CLEARANCE_CONSTRAINT, aA.m_item,
+                                                        aB.m_item, layer );
+                        const MINOPTMAX<int>& range = constraint.m_Value;
+                        const int             value = range.HasMin() ? range.Min() : 0;
+
+                        if( value > worst )
+                        {
+                            worst = value;
+                            source = constraint.GetMinRule();
+                        }
+                    }
+
+                    if( worst >= 0 )
+                        break;
+                }
+
+                return { std::max( worst, 0 ), source };
+            };
+
+    std::unordered_map<uint64_t, std::pair<int, const DRC_RULE*>> cache;
+
+    auto clearance =
+            [&]( int aA, int aB ) -> std::pair<int, const DRC_RULE*>
+            {
+                const uint64_t key = ( static_cast<uint64_t>( aA ) << 32 )
+                                     | static_cast<uint32_t>( aB );
+
+                if( auto it = cache.find( key ); it != cache.end() )
+                    return it->second;
+
+                return cache.emplace( key, evaluate( items[aA], items[aB] ) ).first->second;
+            };
+
+    int              cellCount = static_cast<int>( initialCells.size() );
+    std::vector<int> reps;
+
+    auto findReps =
+            [&]()
+            {
+                reps.assign( cellCount, -1 );
+
+                for( int ii = 0; ii < static_cast<int>( items.size() ); ++ii )
+                {
+                    if( reps[items[ii].m_cell] < 0 )
+                        reps[items[ii].m_cell] = ii;
+                }
+            };
+
+    // Split the groups so that two items share a group only if they have the same clearance to
+    // every item of the board.  Comparing to one item per group is not enough: a rule between
+    // two items of the same footprint (the coil and the contacts of a relay) would go unseen
+    // whenever the group's first item belongs to another footprint.  The groups start as the
+    // netclasses, tracks and pads apart.
+    {
+        std::map<std::vector<int>, int> signatures;
+        std::vector<int>                newCells( items.size() );
+        const int                       itemCount = static_cast<int>( items.size() );
+
+        for( int ii = 0; ii < itemCount; ++ii )
+        {
+            std::vector<int> signature;
+            signature.reserve( itemCount + 1 );
+            signature.push_back( items[ii].m_cell );
+
+            for( int jj = 0; jj < itemCount; ++jj )
+            {
+                signature.push_back( std::max( clearance( ii, jj ).first,
+                                               clearance( jj, ii ).first ) );
+            }
+
+            const int next = static_cast<int>( signatures.size() );
+            newCells[ii] = signatures.try_emplace( std::move( signature ), next ).first->second;
+        }
+
+        cellCount = static_cast<int>( signatures.size() );
+
+        for( int ii = 0; ii < itemCount; ++ii )
+            items[ii].m_cell = newCells[ii];
+    }
+
+    findReps();
+
+    auto cellClearance =
+            [&]( int aCellA, int aCellB ) -> int
+            {
+                return std::max( clearance( reps[aCellA], reps[aCellB] ).first,
+                                 clearance( reps[aCellB], reps[aCellA] ).first );
+            };
+
+    std::map<int, int> trackCellOfNet;
+
+    for( const CLEARANCE_ITEM& item : items )
+    {
+        if( !item.m_isPad )
+            trackCellOfNet[item.m_netCode] = item.m_cell;
+    }
+
+    // The group of tracks each group of pads belongs to: -1 if its pads are netless or belong to
+    // several groups.
+    std::vector<int> padGroup( cellCount, -2 );
+
+    for( const CLEARANCE_ITEM& item : items )
+    {
+        if( !item.m_isPad )
+            continue;
+
+        auto it = trackCellOfNet.find( item.m_netCode );
+        int  group = it != trackCellOfNet.end() ? it->second : -1;
+        int& cellGroup = padGroup[item.m_cell];
+
+        if( cellGroup == -2 )
+            cellGroup = group;
+        else if( cellGroup != group )
+            cellGroup = -1;
+    }
+
+    // Each group of tracks is a class.  A group of pads which behaves like the tracks of its
+    // nets uses their class, as Specctra does for pins without a clearance class; any other
+    // group of pads becomes a class of pins.
+    std::vector<int> classOfCell( cellCount, -1 );
+    std::vector<int> classCells;
+
+    for( int cell = 0; cell < cellCount; ++cell )
+    {
+        if( !items[reps[cell]].m_isPad )
+        {
+            classOfCell[cell] = static_cast<int>( classCells.size() );
+            classCells.push_back( cell );
+        }
+    }
+
+    for( int cell = 0; cell < cellCount; ++cell )
+    {
+        if( !items[reps[cell]].m_isPad )
+            continue;
+
+        const int group = padGroup[cell];
+        bool      same = group >= 0 && cellClearance( cell, cell ) == cellClearance( group, group );
+
+        for( int other = 0; same && other < cellCount; ++other )
+            same = cellClearance( cell, other ) == cellClearance( group, other );
+
+        if( same )
+        {
+            classOfCell[cell] = classOfCell[group];
+        }
+        else
+        {
+            classOfCell[cell] = static_cast<int>( classCells.size() );
+            classCells.push_back( cell );
+        }
+    }
+
+    // Specctra cannot give a via another clearance than the tracks of its net.
+    std::set<wxString> viaRules;
+
+    for( const CLEARANCE_ITEM& via : vias )
+    {
+        const int track = reps[trackCellOfNet.at( via.m_netCode )];
+
+        for( int cell = 0; cell < cellCount; ++cell )
+        {
+            auto [viaValue, viaRule] = evaluate( via, items[reps[cell]] );
+            auto [trackValue, trackRule] = clearance( track, reps[cell] );
+
+            if( viaValue == trackValue )
+                continue;
+
+            for( const DRC_RULE* rule : { viaRule, trackRule } )
+            {
+                if( rule && !rule->IsImplicit() )
+                    viaRules.insert( rule->m_Name );
+            }
+        }
+    }
+
+    for( const wxString& ruleName : viaRules )
+    {
+        ReportWarning( m_reporter, wxString::Format( _( "Rule '%s': Specctra cannot give vias "
+                                                        "another clearance than tracks, vias are "
+                                                        "exported with the track clearance." ),
+                                                     ruleName ) );
+    }
+
+    // Name the classes: the netclass name, numbered when the netclass is split.
+    std::map<wxString, int> groupsOfNetclass;
+    std::map<wxString, int> nameIndex;
+    std::set<std::string>   usedNames;
+
+    for( int cell : classCells )
+    {
+        const CLEARANCE_ITEM& rep = items[reps[cell]];
+
+        if( !rep.m_isPad )
+            groupsOfNetclass[rep.m_item->GetNet()->GetNetClass()->GetName()]++;
+    }
+
+    m_clearanceClasses.resize( classCells.size() );
+
+    for( size_t ii = 0; ii < classCells.size(); ++ii )
+    {
+        const CLEARANCE_ITEM& rep = items[reps[classCells[ii]]];
+        CLEARANCE_CLASS&      clearanceClass = m_clearanceClasses[ii];
+        wxString              name;
+
+        if( !rep.m_isPad )
+        {
+            NETCLASS*       netclass = rep.m_item->GetNet()->GetNetClass();
+            const wxString& netclassName = netclass->GetName();
+
+            // Freerouting creates a class named 'default' itself, see exportNETCLASS()
+            wxString base = netclassName;
+
+            if( netclassName == NETCLASS::Default )
+                base = wxS( "kicad_default" );
+
+            clearanceClass.m_netclass = netclass;
+
+            if( groupsOfNetclass[netclassName] > 1 )
+                name = wxString::Format( wxS( "%s_%d" ), base, ++nameIndex[netclassName] );
+            else
+                name = base;
+        }
+        else
+        {
+            const FOOTPRINT* footprint = rep.m_item->GetParentFootprint();
+            const wxString   ref = footprint ? footprint->GetReference() : wxString( wxS( "pad" ) );
+
+            name = wxString::Format( wxS( "pins_%s_%d" ), ref, ++nameIndex[wxS( "pins_" ) + ref] );
+        }
+
+        std::string id = sanitizeForDSNString( name );
+
+        while( !usedNames.insert( id ).second )
+            id += "_";
+
+        clearanceClass.m_name = id;
+    }
+
+    for( const CLEARANCE_ITEM& item : items )
+    {
+        CLEARANCE_CLASS& clearanceClass = m_clearanceClasses[classOfCell[item.m_cell]];
+
+        if( !item.m_isPad )
+            clearanceClass.m_netIds.push_back( sanitizeForDSNString( item.m_item->GetNetname() ) );
+        else if( !clearanceClass.m_netclass )
+        {
+            const PAD* pad = static_cast<const PAD*>( item.m_item );
+
+            m_padClearanceClass[pad] = pinClearanceClassName( clearanceClass.m_name, pad,
+                                                              aBoard->GetCopperLayerCount() );
+        }
+    }
+
+    m_clearanceMatrix.assign( classCells.size(), std::vector<int>( classCells.size(), 0 ) );
+
+    for( size_t ii = 0; ii < classCells.size(); ++ii )
+    {
+        for( size_t jj = 0; jj < classCells.size(); ++jj )
+            m_clearanceMatrix[ii][jj] = cellClearance( classCells[ii], classCells[jj] );
+    }
+}
+
+
 void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
 {
     std::shared_ptr<NET_SETTINGS>& netSettings = aBoard->GetDesignSettings().m_NetSettings;
@@ -1509,8 +2053,15 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
             // necessarily long.  The exported netlist will have some fabricated pin names in it.
             // If you don't like fabricated pin names, then make sure all pads within your
             // FOOTPRINTs are uniquely named!
+            std::vector<std::pair<std::string, std::string>> pinClearanceClasses;
+
             for( PIN& pin : image->m_pins )
             {
+                auto padClass = m_padClearanceClass.find( pin.m_kiPad );
+
+                if( padClass != m_padClearanceClass.end() )
+                    pinClearanceClasses.emplace_back( pin.m_pin_id, padClass->second );
+
                 int  netcode = pin.m_kiNetCode;
 
                 if( netcode > 0 )
@@ -1545,6 +2096,7 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
             place->SetVertex( mapPt( footprint->GetPosition() ) );
             place->m_component_id = componentId;
             place->m_part_number  = sanitizeForDSNString( footprint->GetValue() );
+            place->m_pin_clearance_classes = std::move( pinClearanceClasses );
 
             // footprint is flipped from bottom side, set side to T_back
             if( footprint->GetFlag() )
@@ -1733,6 +2285,13 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
 
     //-----<output NETCLASSs>----------------------------------------------------
 
+    if( !m_clearanceClasses.empty() )
+    {
+        // The custom design rules have been translated into classes which replace the netclasses
+        exportClearanceClasses();
+        return;
+    }
+
     // Export netclass info
     exportNETCLASS( netSettings->GetDefaultNetclass().get(), aBoard );
 
@@ -1819,6 +2378,74 @@ void SPECCTRA_DB::exportNETCLASS( const NETCLASS* aNetClass, const BOARD* aBoard
     clazz->m_circuit.push_back( text );
 
     delete via;
+}
+
+
+void SPECCTRA_DB::exportClearanceClasses()
+{
+    char     text[256];
+    NETWORK* network = m_pcb->m_network;
+
+    for( size_t ii = 0; ii < m_clearanceClasses.size(); ++ii )
+    {
+        const CLEARANCE_CLASS& clearanceClass = m_clearanceClasses[ii];
+        const NETCLASS*        netclass = clearanceClass.m_netclass;
+        CLASS*                 clazz = new CLASS( network );
+
+        network->m_classes.push_back( clazz );
+
+        clazz->m_class_id = clearanceClass.m_name;
+        clazz->m_net_ids = clearanceClass.m_netIds;
+        clazz->m_rules = new RULE( clazz, T_rule );
+
+        if( netclass && netclass->HasTrackWidth() )
+        {
+            std::snprintf( text, sizeof( text ), "(width %.6g)",
+                           scale( netclass->GetTrackWidth() ) );
+            clazz->m_rules->m_rules.push_back( text );
+        }
+
+        // The clearance between two nets of the class, or two pins of a class of pins.
+        std::snprintf( text, sizeof( text ), "(clearance %.6g)",
+                       scale( m_clearanceMatrix[ii][ii] ) );
+        clazz->m_rules->m_rules.push_back( text );
+
+        if( netclass )
+        {
+            PADSTACK* via = makeVia( netclass->GetViaDiameter(), netclass->GetViaDrill(),
+                                     m_top_via_layer, m_bot_via_layer );
+
+            std::snprintf( text, sizeof( text ), "(use_via \"%s\")", via->GetPadstackId().c_str() );
+            clazz->m_circuit.push_back( text );
+
+            delete via;
+        }
+    }
+
+    // Every pair is set explicitly: Freerouting otherwise gives a new class the largest
+    // clearance it already knows.  An untyped rule sets the clearance between all the items of
+    // the two classes (Freerouting gives each class named in a class_class rule its own copies
+    // for tracks, vias, SMD pads, pins and areas, and sets them all).
+    for( size_t ii = 0; ii < m_clearanceClasses.size(); ++ii )
+    {
+        for( size_t jj = ii + 1; jj < m_clearanceClasses.size(); ++jj )
+        {
+            CLASS_CLASS* classClass = new CLASS_CLASS( network, T_class_class );
+
+            network->m_class_classes.push_back( classClass );
+
+            classClass->classes = new CLASSES( classClass );
+            classClass->classes->class_ids.push_back( m_clearanceClasses[ii].m_name );
+            classClass->classes->class_ids.push_back( m_clearanceClasses[jj].m_name );
+
+            RULE* rule = new RULE( classClass, T_rule );
+
+            std::snprintf( text, sizeof( text ), "(clearance %.6g)",
+                           scale( m_clearanceMatrix[ii][jj] ) );
+            rule->m_rules.push_back( text );
+            classClass->Append( rule );
+        }
+    }
 }
 
 
