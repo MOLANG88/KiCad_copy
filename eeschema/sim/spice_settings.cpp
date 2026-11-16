@@ -23,6 +23,11 @@
 #include "spice_settings.h"
 #include <settings/parameters.h>
 
+#include <fast_float/fast_float.h>
+
+#include <cctype>
+#include <climits>
+
 
 const int spiceSettingsSchemaVersion = 0;
 
@@ -51,8 +56,7 @@ NGSPICE_SETTINGS::NGSPICE_SETTINGS( JSON_SETTINGS* aParent, const std::string& a
             &m_compatibilityMode, NGSPICE_COMPATIBILITY_MODE::LT_PSPICE,
             NGSPICE_COMPATIBILITY_MODE::USER_CONFIG, NGSPICE_COMPATIBILITY_MODE::HSPICE ) );
 
-    for( const std::string& option : SupportedOptions() )
-        m_params.emplace_back( new PARAM<wxString>( "options." + option, &m_options[option], "" ) );
+    m_params.emplace_back( new PARAM_MAP<wxString>( "options", &m_options, {} ) );
 }
 
 
@@ -77,7 +81,66 @@ wxString NGSPICE_SETTINGS::GetOption( const std::string& aName ) const
 
 void NGSPICE_SETTINGS::SetOption( const std::string& aName, const wxString& aValue )
 {
-    m_options[aName] = aValue;
+    if( aValue.Strip( wxString::both ).IsEmpty() )
+        m_options.erase( aName );
+    else
+        m_options[aName] = aValue;
+}
+
+
+std::optional<wxString> NGSPICE_SETTINGS::NormalizeOption( const std::string& aName, const wxString& aValue )
+{
+    wxString value = aValue.Strip( wxString::both );
+
+    if( value.IsEmpty() )
+        return wxString();
+
+    if( aName == "method" )
+    {
+        value.MakeLower();
+
+        if( value == wxS( "trap" ) || value == wxS( "gear" ) )
+            return value;
+
+        return std::nullopt;
+    }
+
+    if( aName == "itl1" || aName == "itl4" )
+    {
+        long limit = 0;
+
+        if( !value.IsNumber() || !value.ToLong( &limit ) || limit < 1 || limit > INT_MAX )
+            return std::nullopt;
+
+        return wxString::Format( wxS( "%ld" ), limit );
+    }
+
+    // ngspice reads only a point as the decimal separator
+    value.Replace( wxS( "," ), wxS( "." ) );
+
+    std::string str( value.ToUTF8() );
+    const char* begin = str.data();
+    const char* end = begin + str.size();
+    const char* mantissa = ( *begin == '+' || *begin == '-' ) ? begin + 1 : begin;
+
+    // from_chars also takes inf and nan, which ngspice does not
+    if( mantissa == end || !( std::isdigit( (unsigned char) *mantissa ) || *mantissa == '.' ) )
+        return std::nullopt;
+
+    double parsed = 0.0;
+    auto   result = fast_float::from_chars( mantissa, end, parsed );
+
+    if( result.ec != std::errc() )
+        return std::nullopt;
+
+    // Letters after the number are a scale factor and units, which ngspice accepts
+    for( const char* c = result.ptr; c != end; ++c )
+    {
+        if( !std::isalpha( (unsigned char) *c ) )
+            return std::nullopt;
+    }
+
+    return value;
 }
 
 
@@ -87,24 +150,24 @@ wxString NGSPICE_SETTINGS::GetOptionsDirective() const
 
     for( const std::string& name : SupportedOptions() )
     {
-        wxString value = GetOption( name );
-        value.Trim( true ).Trim( false );
+        std::optional<wxString> value = NormalizeOption( name, GetOption( name ) );
 
-        if( !value.IsEmpty() )
-            options += wxString::Format( wxT( " %s=%s" ), wxString::FromUTF8( name ), value );
+        if( value && !value->IsEmpty() )
+            options += wxString::Format( wxS( " %s=%s" ), wxString::FromUTF8( name ), *value );
     }
 
     if( options.IsEmpty() )
         return wxEmptyString;
 
-    return wxT( ".options" ) + options;
+    return wxS( ".options" ) + options;
 }
 
 
 const std::vector<std::string>& NGSPICE_SETTINGS::SupportedOptions()
 {
-    static const std::vector<std::string> options = { "method", "reltol", "abstol", "vntol", "chgtol", "gmin", "gshunt",
-                                                      "rshunt", "itl1",   "itl4",   "trtol", "temp",   "tnom" };
+    static const std::vector<std::string> options = { "method", "reltol", "abstol", "vntol", "chgtol",
+                                                      "trtol",  "gmin",   "gshunt", "rshunt", "itl1",
+                                                      "itl4",   "temp",   "tnom" };
 
     return options;
 }

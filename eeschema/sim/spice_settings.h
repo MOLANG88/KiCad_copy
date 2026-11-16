@@ -26,6 +26,7 @@
 #include <settings/nested_settings.h>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -88,19 +89,29 @@ public:
     /// Return the value set for a simulator option, or an empty string if it is unset.
     wxString GetOption( const std::string& aName ) const;
 
-    /// Set (or clear, when aValue is empty) the value for a simulator option.
+    /// Set the value for a simulator option.  A blank value clears it.
     void SetOption( const std::string& aName, const wxString& aValue );
 
     /**
-     * Build a ".options ..." directive from the options that have a value set, or an empty
-     * string if none are set.
+     * Return \a aValue in the form ngspice reads for option \a aName.
+     *
+     * A decimal comma becomes a point, the integration method is lower-cased and iteration
+     * limits must be positive integers.  A blank value normalizes to an empty string.
+     *
+     * @return the normalized value, or std::nullopt if \a aValue is not valid for \a aName.
+     */
+    static std::optional<wxString> NormalizeOption( const std::string& aName, const wxString& aValue );
+
+    /**
+     * Build a ".options ..." directive from the valid options that have a value set, or an
+     * empty string if there are none.
      *
      * This is emitted into the netlist ahead of the schematic directives so that any ".options"
      * placed on the schematic override these (ngspice applies the last value seen for an option).
      */
     wxString GetOptionsDirective() const;
 
-    /// The ngspice option names exposed through the settings UI, in display order.
+    /// The ngspice option names exposed through the settings UI.
     static const std::vector<std::string>& SupportedOptions();
 
 private:

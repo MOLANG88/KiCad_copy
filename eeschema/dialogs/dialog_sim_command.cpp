@@ -28,12 +28,14 @@
 #include <eda_pattern_match.h>
 
 #include <wx/tokenzr.h>
-#include <wx/sizer.h>
-#include <wx/stattext.h>
-#include <wx/textctrl.h>
 
+#include <algorithm>
 #include <vector>
 #include <utility>
+
+
+// Keywords for the integration methods, in the order of m_optMethod's choices
+static const std::vector<std::string> SIM_METHODS = { "", "trap", "gear" };
 
 
 // Helper function to shorten conditions
@@ -65,7 +67,8 @@ DIALOG_SIM_COMMAND::DIALOG_SIM_COMMAND( SIMULATOR_FRAME* aParent,
         m_simulatorFrame( aParent ),
         m_circuitModel( aCircuitModel ),
         m_settings( aSettings ),
-        m_spiceEmptyValidator( true )
+        m_spiceEmptyValidator( true ),
+        m_iterationLimitValidator( nullptr, wxNUM_VAL_ZERO_AS_BLANK )
 {
     m_simPages->Hide();
 
@@ -124,11 +127,28 @@ DIALOG_SIM_COMMAND::DIALOG_SIM_COMMAND( SIMULATOR_FRAME* aParent,
             m_noiseSrc->Append( item.refName );
     }
 
-    if( !dynamic_cast<NGSPICE_SETTINGS*>( aSettings.get() ) )
-        m_compatibilityModeSizer->Show( false );
+    m_simOptionCtrls = { { "reltol", m_optReltol }, { "abstol", m_optAbstol }, { "vntol", m_optVntol },
+                         { "chgtol", m_optChgtol }, { "trtol", m_optTrtol },   { "gmin", m_optGmin },
+                         { "gshunt", m_optGshunt }, { "rshunt", m_optRshunt }, { "itl1", m_optItl1 },
+                         { "itl4", m_optItl4 },     { "temp", m_optTemp },     { "tnom", m_optTnom } };
 
-    if( dynamic_cast<NGSPICE_SETTINGS*>( aSettings.get() ) )
-        buildSimOptionsPage();
+    // Focus loss rewrites an empty field to the minimum, and only zero shows as blank
+    m_iterationLimitValidator.SetMin( 0 );
+
+    for( const auto& [key, ctrl] : m_simOptionCtrls )
+    {
+        if( key == "itl1" || key == "itl4" )
+            ctrl->SetValidator( m_iterationLimitValidator );
+        else
+            ctrl->SetValidator( m_spiceEmptyValidator );
+    }
+
+    if( !dynamic_cast<NGSPICE_SETTINGS*>( aSettings.get() ) )
+    {
+        m_compatibilityModeSizer->Show( false );
+        m_notebook1->DeletePage( m_notebook1->FindPage( m_panelSimOptions ) );
+        m_simOptionCtrls.clear();
+    }
 
     int minWidth = GetTextExtent( wxS( "XXX.XXXXXXX" ) ).x;
     m_y1Min->SetMinSize( wxSize( minWidth, -1 ) );
@@ -143,87 +163,6 @@ DIALOG_SIM_COMMAND::DIALOG_SIM_COMMAND( SIMULATOR_FRAME* aParent,
     m_bSizerY3->Show( false );
 
     SetupStandardButtons();
-}
-
-
-void DIALOG_SIM_COMMAND::buildSimOptionsPage()
-{
-    struct OPTION_DEF
-    {
-        std::string           key;
-        wxString              label;
-        wxString              tooltip;
-        std::vector<wxString> choices; ///< If non-empty, present a dropdown of these values.
-    };
-
-    const std::vector<OPTION_DEF> optionDefs = {
-        { "method", _( "Integration method" ), _( "Numerical integration method" ), { "trap", "gear" } },
-        { "reltol", _( "Relative tolerance" ), _( "Relative error tolerance (default 1e-3)" ), {} },
-        { "abstol", _( "Absolute current tol." ), _( "Absolute current error tolerance (default 1e-12 A)" ), {} },
-        { "vntol", _( "Absolute voltage tol." ), _( "Absolute voltage error tolerance (default 1e-6 V)" ), {} },
-        { "chgtol", _( "Charge tolerance" ), _( "Absolute charge error tolerance (default 1e-14)" ), {} },
-        { "gmin", _( "Minimum conductance" ), _( "Minimum conductance across junctions (default 1e-12)" ), {} },
-        { "gshunt", _( "Node-to-ground cond." ), _( "Conductance added from each node to ground (default 0)" ), {} },
-        { "rshunt", _( "Node-to-ground res." ), _( "Resistance added from each node to ground (default off)" ), {} },
-        { "itl1", _( "DC iteration limit" ), _( "Operating-point iteration limit (default 100)" ), {} },
-        { "itl4", _( "Transient iter. limit" ), _( "Per-timestep iteration limit (default 10)" ), {} },
-        { "trtol", _( "Truncation error tol." ), _( "Transient truncation error factor (default 7)" ), {} },
-        { "temp", _( "Temperature (\u00b0C)" ), _( "Operating temperature (default 27)" ), {} },
-        { "tnom", _( "Nominal temp. (\u00b0C)" ), _( "Parameter measurement temperature (default 27)" ), {} },
-    };
-
-    wxPanel*    panel = new wxPanel( m_notebook1 );
-    wxBoxSizer* sizer = new wxBoxSizer( wxVERTICAL );
-
-    wxStaticText* hint =
-            new wxStaticText( panel, wxID_ANY,
-                              _( "These values are passed to ngspice as .options. Leave a field empty to use the "
-                                 "ngspice default. Any .options placed on the schematic override these." ) );
-    hint->Wrap( 480 );
-    sizer->Add( hint, 0, wxALL, 8 );
-
-    wxFlexGridSizer* grid = new wxFlexGridSizer( 0, 4, 4, 8 );
-    grid->AddGrowableCol( 1 );
-    grid->AddGrowableCol( 3 );
-
-    for( const OPTION_DEF& def : optionDefs )
-    {
-        // Show the actual ngspice option keyword alongside the friendly label.
-        wxString      text = wxString::Format( wxT( "%s (%s):" ), def.label, wxString::FromUTF8( def.key ) );
-        wxStaticText* label = new wxStaticText( panel, wxID_ANY, text );
-        wxWindow*     ctrl = nullptr;
-
-        if( def.choices.empty() )
-        {
-            wxTextCtrl* textCtrl = new wxTextCtrl( panel, wxID_ANY );
-            m_simOptionTextCtrls[def.key] = textCtrl;
-            ctrl = textCtrl;
-        }
-        else
-        {
-            wxChoice* choice = new wxChoice( panel, wxID_ANY );
-            choice->Append( _( "(default)" ) );
-
-            for( const wxString& value : def.choices )
-                choice->Append( value );
-
-            choice->SetSelection( 0 );
-            m_simOptionChoices[def.key] = choice;
-            ctrl = choice;
-        }
-
-        label->SetToolTip( def.tooltip );
-        ctrl->SetToolTip( def.tooltip );
-
-        grid->Add( label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 8 );
-        grid->Add( ctrl, 1, wxEXPAND | wxRIGHT, 8 );
-    }
-
-    sizer->Add( grid, 1, wxEXPAND | wxALL, 8 );
-
-    panel->SetSizer( sizer );
-    panel->Layout();
-    m_notebook1->AddPage( panel, _( "Simulator Options" ), false );
 }
 
 
@@ -249,14 +188,13 @@ bool DIALOG_SIM_COMMAND::TransferDataToWindow()
                                                   settings->GetCompatibilityMode() ) );       break;
         }
 
-        for( const auto& [key, ctrl] : m_simOptionTextCtrls )
-            ctrl->SetValue( settings->GetOption( key ) );
+        auto method = std::find( SIM_METHODS.begin(), SIM_METHODS.end(),
+                                 settings->GetOption( "method" ).Lower().ToStdString() );
 
-        for( const auto& [key, choice] : m_simOptionChoices )
-        {
-            int sel = choice->FindString( settings->GetOption( key ) );
-            choice->SetSelection( sel == wxNOT_FOUND ? 0 : sel );
-        }
+        m_optMethod->SetSelection( method == SIM_METHODS.end() ? 0 : (int) ( method - SIM_METHODS.begin() ) );
+
+        for( const auto& [key, ctrl] : m_simOptionCtrls )
+            ctrl->ChangeValue( settings->GetOption( key ) );
     }
 
     return true;
@@ -394,28 +332,11 @@ bool DIALOG_SIM_COMMAND::TransferDataFromWindow()
     if( !wxDialog::TransferDataFromWindow() )
         return false;
 
-    // The simulator dependent settings always get transferred.
-    if( NGSPICE_SETTINGS* settings = dynamic_cast<NGSPICE_SETTINGS*>( m_settings.get() ) )
-    {
-        switch( m_compatibilityMode->GetSelection() )
-        {
-        case 0: settings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::USER_CONFIG ); break;
-        case 1: settings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::NGSPICE );     break;
-        case 2: settings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::PSPICE );      break;
-        case 3: settings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::LTSPICE );     break;
-        case 4: settings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::LT_PSPICE );   break;
-        case 5: settings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::HSPICE );      break;
-        }
+    NGSPICE_SETTINGS*               ngspiceSettings = dynamic_cast<NGSPICE_SETTINGS*>( m_settings.get() );
+    std::map<std::string, wxString> simOptions;
 
-        for( const auto& [key, ctrl] : m_simOptionTextCtrls )
-            settings->SetOption( key, ctrl->GetValue() );
-
-        for( const auto& [key, choice] : m_simOptionChoices )
-        {
-            int sel = choice->GetSelection();
-            settings->SetOption( key, sel <= 0 ? wxString() : choice->GetStringSelection() );
-        }
-    }
+    if( ngspiceSettings && !readSimOptions( simOptions ) )
+        return false;
 
     wxString previousSimCommand = m_simCommand;
     wxWindow* page = m_simPages->GetCurrentPage();
@@ -594,7 +515,61 @@ bool DIALOG_SIM_COMMAND::TransferDataFromWindow()
     if( previousSimCommand != m_simCommand )
         m_simCommand.Trim();
 
+    // Settings are live, so write them only once everything validated or Cancel would keep them
+    if( ngspiceSettings )
+    {
+        switch( m_compatibilityMode->GetSelection() )
+        {
+        case 0: ngspiceSettings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::USER_CONFIG ); break;
+        case 1: ngspiceSettings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::NGSPICE );     break;
+        case 2: ngspiceSettings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::PSPICE );      break;
+        case 3: ngspiceSettings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::LTSPICE );     break;
+        case 4: ngspiceSettings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::LT_PSPICE );   break;
+        case 5: ngspiceSettings->SetCompatibilityMode( NGSPICE_COMPATIBILITY_MODE::HSPICE );      break;
+        }
+
+        for( const auto& [key, value] : simOptions )
+            ngspiceSettings->SetOption( key, value );
+    }
+
     m_settings->SetFixIncludePaths( m_fixIncludePaths->GetValue() );
+
+    return true;
+}
+
+
+bool DIALOG_SIM_COMMAND::readSimOptions( std::map<std::string, wxString>& aOptions )
+{
+    auto showOptionsPage =
+            [&]()
+            {
+                m_notebook1->SetSelection( m_notebook1->FindPage( m_panelSimOptions ) );
+            };
+
+    if( !m_panelSimOptions->Validate() )
+    {
+        showOptionsPage();
+        return false;
+    }
+
+    aOptions["method"] = SIM_METHODS[std::max( 0, m_optMethod->GetSelection() )];
+
+    for( const auto& [key, ctrl] : m_simOptionCtrls )
+    {
+        std::optional<wxString> value = NGSPICE_SETTINGS::NormalizeOption( key, ctrl->GetValue() );
+
+        if( !value )
+        {
+            showOptionsPage();
+            ctrl->SetFocus();
+            ctrl->SelectAll();
+            DisplayError( this, wxString::Format( _( "'%s' is not a valid value for %s." ), ctrl->GetValue(),
+                                                  wxString::FromUTF8( key ) ) );
+            return false;
+        }
+
+        aOptions[key] = *value;
+    }
 
     return true;
 }
