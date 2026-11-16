@@ -2794,9 +2794,10 @@ void PCB_IO_IPC2581::addPadStack( wxXmlNode* aContentNode, const PCB_VIA* aVia )
                     int width = aViaShape->GetWidth( aLayer );
 
                     // Mask entries of untented vias include the solder mask expansion,
-                    // matching the plotted artwork.
+                    // matching the plotted artwork. Clamp, or a negative expansion
+                    // returns as an opening of that size.
                     if( IsSolderMaskLayer( aLayer ) )
-                        width += 2 * aViaShape->GetSolderMaskExpansion();
+                        width = std::max( 0, width + 2 * aViaShape->GetSolderMaskExpansion() );
 
                     shape.SetEnd( { KiROUND( width / 2.0 ), 0 } );
                 }
