@@ -20,9 +20,59 @@
 #include <algorithm>
 
 #include <board.h>
+#include <pcb_base_edit_frame.h>
+#include <pcb_draw_panel_gal.h>
 #include <tool/tool_manager.h>
 #include <tools/pcb_actions.h>
+#include <widgets/appearance_controls.h>
 #include "net_visibility_helpers.h"
+
+namespace
+{
+
+std::set<int> getAllNetCodes( BOARD* aBoard )
+{
+    std::set<int> allCodes;
+
+    for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
+        allCodes.insert( net->GetNetCode() );
+
+    return allCodes;
+}
+
+
+// Run the show/hide actions for whole net sets inside a single batch: the per-net canvas
+// and grid refreshes are suppressed and applied once at the end. Without a frame (unit
+// tests) the actions are simply run one by one.
+void applyNetVisibility( TOOL_MANAGER* aToolManager, const std::set<int>& aShowCodes,
+                         const std::set<int>& aHideCodes )
+{
+    PCB_BASE_EDIT_FRAME* frame = dynamic_cast<PCB_BASE_EDIT_FRAME*>( aToolManager->GetToolHolder() );
+    APPEARANCE_CONTROLS* appearance = frame ? frame->GetAppearancePanel() : nullptr;
+
+    if( appearance )
+        appearance->BeginBatchNetVisibilityChange();
+
+    for( int netCode : aShowCodes )
+        aToolManager->RunAction( PCB_ACTIONS::showNetInRatsnest, netCode );
+
+    for( int netCode : aHideCodes )
+        aToolManager->RunAction( PCB_ACTIONS::hideNetInRatsnest, netCode );
+
+    if( appearance )
+    {
+        appearance->EndBatchNetVisibilityChange();
+
+        if( frame->GetCanvas() )
+        {
+            frame->GetCanvas()->RedrawRatsnest();
+            frame->GetCanvas()->Refresh();
+        }
+    }
+}
+
+} // namespace
+
 
 namespace NET_VISIBILITY_HELPERS
 {
@@ -32,10 +82,7 @@ NET_VISIBILITY_STATE GetVisibilityState( BOARD* aBoard, const std::set<int>& aSe
 {
     NET_VISIBILITY_STATE state;
 
-    std::set<int> allCodes;
-
-    for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
-        allCodes.insert( net->GetNetCode() );
+    std::set<int> allCodes = getAllNetCodes( aBoard );
 
     state.anySelected = !aSelectedCodes.empty();
 
@@ -80,67 +127,39 @@ NET_VISIBILITY_MENU_STATE GetMenuState( const NET_VISIBILITY_STATE& aState )
 
 void ShowNets( TOOL_MANAGER* aToolManager, const std::set<int>& aNetCodes )
 {
-    for( int netCode : aNetCodes )
-    {
-        aToolManager->RunAction( PCB_ACTIONS::showNetInRatsnest, netCode );
-    }
+    applyNetVisibility( aToolManager, aNetCodes, {} );
 }
 
 
 void HideNets( TOOL_MANAGER* aToolManager, const std::set<int>& aNetCodes )
 {
-    for( int netCode : aNetCodes )
-    {
-        aToolManager->RunAction( PCB_ACTIONS::hideNetInRatsnest, netCode );
-    }
+    applyNetVisibility( aToolManager, {}, aNetCodes );
 }
 
 
 void ShowAllNets( TOOL_MANAGER* aToolManager, BOARD* aBoard )
 {
-    std::set<int> allNetCodes;
-
-    for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
-    {
-        allNetCodes.insert( net->GetNetCode() );
-    }
-
-    ShowNets( aToolManager, allNetCodes );
+    applyNetVisibility( aToolManager, getAllNetCodes( aBoard ), {} );
 }
 
 
 void HideAllNets( TOOL_MANAGER* aToolManager, BOARD* aBoard )
 {
-    std::set<int> allNetCodes;
-
-    for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
-    {
-        allNetCodes.insert( net->GetNetCode() );
-    }
-
-    HideNets( aToolManager, allNetCodes );
+    applyNetVisibility( aToolManager, {}, getAllNetCodes( aBoard ) );
 }
 
 
 void ShowOnlyNets( TOOL_MANAGER* aToolManager, BOARD* aBoard, const std::set<int>& aSelectedCodes )
 {
-    // Show selected nets
-    ShowNets( aToolManager, aSelectedCodes );
-
-    // Hide all others
     std::set<int> otherNetCodes;
 
-    for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
+    for( int netCode : getAllNetCodes( aBoard ) )
     {
-        int netCode = net->GetNetCode();
-
-        if( aSelectedCodes.find( netCode ) == aSelectedCodes.end() )
-        {
+        if( !aSelectedCodes.count( netCode ) )
             otherNetCodes.insert( netCode );
-        }
     }
 
-    HideNets( aToolManager, otherNetCodes );
+    applyNetVisibility( aToolManager, aSelectedCodes, otherNetCodes );
 }
 
 } // namespace NET_VISIBILITY_HELPERS

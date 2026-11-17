@@ -1887,35 +1887,30 @@ std::set<int> PCB_NET_INSPECTOR_PANEL::getSelectedNetCodes() const
 void PCB_NET_INSPECTOR_PANEL::showSelectedNets()
 {
     NET_VISIBILITY_HELPERS::ShowNets( m_frame->GetToolManager(), getSelectedNetCodes() );
-    m_frame->GetCanvas()->Refresh();
 }
 
 
 void PCB_NET_INSPECTOR_PANEL::hideSelectedNets()
 {
     NET_VISIBILITY_HELPERS::HideNets( m_frame->GetToolManager(), getSelectedNetCodes() );
-    m_frame->GetCanvas()->Refresh();
 }
 
 
 void PCB_NET_INSPECTOR_PANEL::showOnlyNets()
 {
     NET_VISIBILITY_HELPERS::ShowOnlyNets( m_frame->GetToolManager(), m_frame->GetBoard(), getSelectedNetCodes() );
-    m_frame->GetCanvas()->Refresh();
 }
 
 
 void PCB_NET_INSPECTOR_PANEL::showAllNets()
 {
     NET_VISIBILITY_HELPERS::ShowAllNets( m_frame->GetToolManager(), m_frame->GetBoard() );
-    m_frame->GetCanvas()->Refresh();
 }
 
 
 void PCB_NET_INSPECTOR_PANEL::hideAllNets()
 {
     NET_VISIBILITY_HELPERS::HideAllNets( m_frame->GetToolManager(), m_frame->GetBoard() );
-    m_frame->GetCanvas()->Refresh();
 }
 
 
