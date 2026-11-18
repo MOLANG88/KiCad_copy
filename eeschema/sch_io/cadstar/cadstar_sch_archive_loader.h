@@ -194,6 +194,8 @@ private:
     void loadSymbolGateAndPartFields( const SYMDEF_ID& aSymdefID, const PART& aCadstarPart,
                                       const GATE_ID& aGateID, LIB_SYMBOL* aSymbol );
 
+    bool loadPartGatesFromPlacedSymbols( const PART& aCadstarPart, LIB_SYMBOL* aSymbol );
+
     void setFootprintOnSymbol( LIB_SYMBOL*                  aKiCadSymbol,
                                const wxString&              aFootprintName,
                                const wxString&              aFootprintAlternate );
