@@ -702,11 +702,14 @@ void CADSTAR_SCH_ARCHIVE_LOADER::loadPartsLibrary()
             loadSymbolGateAndPartFields( symbolID, part, gateID, kiSym.get() );
         }
 
-        bool saveInLibrary = ok && part.Definition.GateSymbols.size() != 0;
+        bool gatesFromPlacedSymbols =
+                part.Definition.GateSymbols.empty() && loadPartGatesFromPlacedSymbols( part, kiSym.get() );
+
+        bool saveInLibrary = ok && ( part.Definition.GateSymbols.size() != 0 || gatesFromPlacedSymbols );
 
         if( !saveInLibrary )
         {
-            if( part.Definition.GateSymbols.size() == 0 )
+            if( part.Definition.GateSymbols.size() == 0 && !gatesFromPlacedSymbols )
             {
                 m_reporter->Report( wxString::Format( _( "Part definition '%s' has an incomplete "
                                                          "definition (no symbol definitions are "
@@ -733,6 +736,89 @@ void CADSTAR_SCH_ARCHIVE_LOADER::loadPartsLibrary()
 
         checkPoint();
     }
+}
+
+
+bool CADSTAR_SCH_ARCHIVE_LOADER::loadPartGatesFromPlacedSymbols( const PART& aCadstarPart, LIB_SYMBOL* aSymbol )
+{
+    std::map<GATE_ID, const SYMBOL*> placedGates;
+
+    for( const auto& [symbolID, sym] : Schematic.Symbols )
+    {
+        if( !sym.IsComponent || sym.PartRef.RefID != aCadstarPart.ID )
+            continue;
+
+        if( !sym.VariantID.empty() && sym.VariantParentSymbolID != sym.ID )
+            continue;
+
+        if( Library.SymbolDefinitions.find( sym.SymdefID ) == Library.SymbolDefinitions.end() )
+            continue;
+
+        GATE_ID gateID = sym.GateID.IsEmpty() ? GATE_ID( wxT( "A" ) ) : sym.GateID;
+
+        if( getKiCadUnitNumberFromGate( gateID ) < 1 )
+            return false;
+
+        placedGates.emplace( gateID, &sym );
+    }
+
+    if( placedGates.empty() )
+        return false;
+
+    int unitCount = 0;
+
+    for( const auto& [gateID, sym] : placedGates )
+        unitCount = std::max( unitCount, getKiCadUnitNumberFromGate( gateID ) );
+
+    aSymbol->SetUnitCount( unitCount, true );
+
+    for( const auto& [gateID, sym] : placedGates )
+    {
+        loadSymbolGateAndPartFields( sym->SymdefID, aCadstarPart, gateID, aSymbol );
+        m_partSymbolsMap.insert( { { aCadstarPart.ID, gateID }, sym->SymdefID } );
+
+        auto pinNumsIt = m_pinNumsMap.find( aCadstarPart.ID + gateID );
+
+        if( pinNumsIt == m_pinNumsMap.end() )
+            continue;
+
+        TERMINAL_TO_PINNUM_MAP&                   termNumMap = pinNumsIt->second;
+        int                                       unit = getKiCadUnitNumberFromGate( gateID );
+        std::map<wxString, std::vector<SCH_PIN*>> pinsByOldNumber;
+
+        for( SCH_PIN* pin : aSymbol->GetGraphicalPins( unit, 0 ) )
+        {
+            if( pin->GetUnit() == unit )
+                pinsByOldNumber[pin->GetNumber()].push_back( pin );
+        }
+
+        auto setPinNumber =
+                [&]( const TERMINAL_ID& aTerminalID, const wxString& aNewPinNum )
+                {
+                    auto termIt = termNumMap.find( aTerminalID );
+
+                    if( termIt == termNumMap.end() || termIt->second == aNewPinNum )
+                        return;
+
+                    auto pinsIt = pinsByOldNumber.find( termIt->second );
+
+                    if( pinsIt != pinsByOldNumber.end() )
+                    {
+                        for( SCH_PIN* pin : pinsIt->second )
+                            pin->SetNumber( HandleTextOverbar( aNewPinNum ) );
+                    }
+
+                    termIt->second = aNewPinNum;
+                };
+
+        for( const auto& [pinID, pin] : sym->PinNumbers )
+            setPinNumber( pin.TerminalID, wxString::Format( "%ld", pin.PinNum ) );
+
+        for( const auto& [pinID, pin] : sym->PinNames )
+            setPinNumber( pin.TerminalID, pin.NameOrLabel );
+    }
+
+    return true;
 }
 
 
