@@ -203,6 +203,7 @@ set( EESCHEMA_DLGS
     dialogs/dialog_sheet_properties_base.cpp
     dialogs/dialog_symbol_chooser.cpp
     dialogs/dialog_symbol_fields_table.cpp
+    dialogs/panel_symbol_fields_workspace.cpp
     dialogs/dialog_symbol_properties.cpp
     dialogs/dialog_symbol_properties_base.cpp
     dialogs/dialog_symbol_remap.cpp
@@ -359,6 +360,7 @@ set( EESCHEMA_WIDGETS
     widgets/db_lib_preview_panel.cpp
     widgets/symbol_preview_widget.cpp
     widgets/symbol_tree_pane.cpp
+    widgets/workspace_parts_search.cpp
     )
 
 
@@ -413,6 +415,7 @@ set( EESCHEMA_DIFF_MERGE_SRCS
     diff_merge/sch_geometry_extractor.cpp
     diff_merge/sch_diff_canvas_context.cpp
     diff_merge/sch_merge_applier.cpp
+    diff_merge/sym_digest.cpp
     diff_merge/sym_lib_differ.cpp
     diff_merge/sym_item_diff.cpp
     diff_merge/sym_diff_canvas_context.cpp
@@ -476,6 +479,9 @@ set( EESCHEMA_SRCS
     junction_helpers.cpp
     lib_fields_data_model.cpp
     lib_symbol.cpp
+    mdw_part_field.cpp
+    mdw_placed_parts.cpp
+    mdw_bom_compare.cpp
     link_imported_footprints.cpp
     menubar.cpp
     net_navigator.cpp
@@ -577,6 +583,7 @@ set( EESCHEMA_SRCS
     tools/assign_footprints.cpp
     tools/backannotate.cpp
     tools/sch_align_tool.cpp
+    tools/sch_mdw_part_tool.cpp
     tools/ee_graphic_tool.cpp
     tools/ee_grid_helper.cpp
     tools/rule_area_create_helper.cpp

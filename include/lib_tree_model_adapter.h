@@ -33,6 +33,8 @@
 #include <functional>
 #include <set>
 #include <map>
+#include <memory>
+#include <optional>
 
 /**
  * Adapter class in the symbol selector Model-View-Adapter (mediated MVC)
@@ -90,7 +92,10 @@
 #include <project.h>
 
 ;
+class LIBRARY_TABLE_ROW;
 class TOOL_DISPATCHER;
+enum class MDW_LIBRARY_TYPE;
+struct MDW_MEMBER_CHANGES;
 class TOOL_INTERACTIVE;
 class EDA_BASE_FRAME;
 
@@ -115,6 +120,25 @@ public:
      * @return true if @p aWidth is a plausible persisted column width, false if it is corrupt.
      */
     static bool IsValidColumnWidth( int aWidth );
+
+    /// The full lifecycle state of aItem when aColumn is Lifecycle and too narrow to show it, else empty
+    wxString ClippedLifecycle( const wxDataViewItem& aItem, const wxDataViewColumn* aColumn ) const;
+
+    /// Show each team part's lifecycle state as its source last listed it
+    void RefreshLifecycle();
+
+    /// RefreshLifecycle for the libraries whose listings aChanges names, and for rows not yet bound to a team when
+    /// aChanges could bind them
+    void RefreshLifecycle( const MDW_MEMBER_CHANGES& aChanges );
+
+    /// Show the lifecycle state of each team part of aLibNode again, as after an item was rebuilt from its file
+    void RefreshLifecycle( LIB_TREE_NODE_LIBRARY& aLibNode );
+
+    /// RefreshLifecycle and redraw as listings land, for a tree that has no editor frame to hear them
+    void FollowLifecycle();
+
+    /// Rebuild aNode from aItem, keeping its library's team lifecycle states over the item's own fields
+    void UpdateItem( LIB_TREE_NODE_ITEM& aNode, LIB_TREE_ITEM* aItem );
 
 public:
     /**
@@ -192,6 +216,12 @@ public:
      * Remove one of the system groups from the library.
      */
     void RemoveGroup( bool aRecentlyUsedGroup, bool aAlreadyPlacedGroup );
+
+    /**
+     * Replace the children of an external results group while the view is reset. aFill adds them
+     * in the order they are shown.
+     */
+    void RefillGroup( LIB_TREE_NODE_LIBRARY& aGroup, const std::function<void( LIB_TREE_NODE_LIBRARY& )>& aFill );
 
     std::vector<wxString> GetAvailableColumns() const { return m_availableColumns; }
 
@@ -441,6 +471,32 @@ private:
 protected:
     void addColumnIfNecessary( const wxString& aHeader );
 
+    /// Show a column, after aAfter when that is shown, the first time it becomes available, and leave it hidden
+    /// once the user hides it.
+    void offerColumn( const wxString& aHeader, const wxString& aAfter = wxEmptyString );
+
+    /// The kind of team library the adapter's libraries can be, or nothing for one that holds no parts of a team
+    std::optional<MDW_LIBRARY_TYPE> libraryType();
+
+    /// The details pane line for the lifecycle of aLibId, empty for a part that is not a team part
+    wxString lifecycleInfo( const LIB_ID& aLibId );
+
+    /// Show the lifecycle state the workspace lists for each item of aLibNode, whose aType table row is aRow
+    void showLifecycle( LIB_TREE_NODE_LIBRARY& aLibNode, MDW_LIBRARY_TYPE aType, const LIBRARY_TABLE_ROW& aRow );
+
+    /**
+     * Show aStates, by item name, as aLibNode's lifecycle column. A team row never shows its items' own Lifecycle
+     * fields; aHasLifecycle says its source has states, and aStates is null until they are listed.
+     */
+    void applyLifecycle( LIB_TREE_NODE_LIBRARY& aLibNode, bool aTeamRow, bool aHasLifecycle,
+                         const std::map<wxString, wxString>* aStates );
+
+    /// aNode's field aKey as its column shows it
+    wxString fieldText( const LIB_TREE_NODE& aNode, const wxString& aKey ) const;
+
+    /// True when the item aNode has edits not saved yet
+    virtual bool isModified( const LIB_TREE_NODE& aNode ) const { return false; }
+
     void recreateColumns();
     void createMissingColumns();
 
@@ -459,6 +515,13 @@ protected:
     wxDataViewCtrl*              m_widget;
     std::function<void()>        m_lazyLoadHandler;
     std::map<wxString, int>      m_redrawNudge;
+
+    std::set<wxString>           m_lifecycleLibs; ///< Libraries whose states come from a team
+
+    /// Source locator and library id of each library last shown as a team row
+    std::map<wxString, std::pair<wxString, wxString>> m_teamLibs;
+
+    std::shared_ptr<std::function<void( const MDW_MEMBER_CHANGES& )>> m_lifecycleListener;
 
 private:
     SORT_MODE                    m_sort_mode;

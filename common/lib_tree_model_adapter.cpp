@@ -20,13 +20,22 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <core/kicad_algo.h>
 #include <eda_base_frame.h>
 #include <eda_pattern_match.h>
 #include <kiface_base.h>
 #include <kiplatform/ui.h>
 #include <lib_tree_model_adapter.h>
+#include <libraries/library_manager.h>
+#include <mdw/client/mdw_baseline_design.h>
+#include <mdw/client/mdw_library.h>
+#include <mdw/client/mdw_library_sources.h>
+#include <mdw/client/mdw_source.h>
+#include <pgm_base.h>
 #include <project/project_file.h>
 #include <settings/app_settings.h>
+#include <widgets/mdw_member_index.h>
+#include <widgets/mdw_part_state.h>
 #include <widgets/ui_common.h>
 #include <widgets/wx_dataviewctrl.h>
 #include <wx/tokenzr.h>
@@ -322,6 +331,24 @@ void LIB_TREE_MODEL_ADAPTER::RemoveGroup( bool aRecentGroup, bool aPlacedGroup )
 }
 
 
+void LIB_TREE_MODEL_ADAPTER::RefillGroup( LIB_TREE_NODE_LIBRARY&                               aGroup,
+                                          const std::function<void( LIB_TREE_NODE_LIBRARY& )>& aFill )
+{
+    wxCHECK( aGroup.m_IsExternalResultsGroup, /* void */ );
+
+    // The selection may be a row about to be deleted; see UpdateSearchString
+    m_widget->UnselectAll();
+
+    ResetTreeView reset( *this );
+
+    aGroup.m_Children.clear();
+    aFill( aGroup );
+    aGroup.AssignIntrinsicRanks( m_shownColumns );
+    aGroup.UpdateScore( {}, m_filter );
+    aGroup.SortNodes( m_sort_mode == BEST_MATCH );
+}
+
+
 void LIB_TREE_MODEL_ADAPTER::UpdateSearchString( const wxString& aSearch, bool aState )
 {
     const LIB_TREE_NODE* firstMatch = nullptr;
@@ -520,8 +547,13 @@ wxDataViewColumn* LIB_TREE_MODEL_ADAPTER::doAddColumn( const wxString& aHeader, 
 
     int index = (int) m_columns.size();
 
-    wxDataViewColumn* col = new wxDataViewColumn( translatedHeader, new LIB_TREE_RENDERER(), index,
-                                                  m_colWidths[aHeader], wxALIGN_NOT,
+    LIB_TREE_RENDERER* renderer = new LIB_TREE_RENDERER();
+
+    // A clipped state reads by its start, as "Pending R..."
+    if( aHeader == _HKI( "Lifecycle" ) )
+        renderer->EnableEllipsize( wxELLIPSIZE_END );
+
+    wxDataViewColumn* col = new wxDataViewColumn( translatedHeader, renderer, index, m_colWidths[aHeader], wxALIGN_NOT,
                                                   wxDATAVIEW_CELL_INERT | (int) wxDATAVIEW_COL_RESIZABLE );
     m_widget->AppendColumn( col );
 
@@ -537,12 +569,277 @@ wxDataViewColumn* LIB_TREE_MODEL_ADAPTER::doAddColumn( const wxString& aHeader, 
 
 void LIB_TREE_MODEL_ADAPTER::addColumnIfNecessary( const wxString& aHeader )
 {
-    if( m_colNameMap.count( aHeader ) )
-        return;
+    // A column shown from the settings is created before its data is offered, yet must stay pickable once hidden
+    if( !alg::contains( m_availableColumns, aHeader ) )
+        m_availableColumns.emplace_back( aHeader );
 
     // Columns will be created later
-    m_colNameMap[aHeader] = nullptr;
-    m_availableColumns.emplace_back( aHeader );
+    if( !m_colNameMap.count( aHeader ) )
+        m_colNameMap[aHeader] = nullptr;
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::offerColumn( const wxString& aHeader, const wxString& aAfter )
+{
+    if( alg::contains( m_cfg.offered_columns, aHeader ) )
+        return;
+
+    m_cfg.offered_columns.push_back( aHeader );
+
+    if( !alg::contains( m_shownColumns, aHeader ) )
+    {
+        std::vector<wxString> shown = m_shownColumns;
+        auto                  after = std::find( shown.begin(), shown.end(), aAfter );
+
+        // Appended last, a new column starts off-screen in a narrow tree pane
+        shown.insert( after == shown.end() ? shown.end() : after + 1, aHeader );
+        SetShownColumns( shown );
+    }
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::RefreshLifecycle()
+{
+    for( std::unique_ptr<LIB_TREE_NODE>& lib : m_tree.m_Children )
+        RefreshLifecycle( static_cast<LIB_TREE_NODE_LIBRARY&>( *lib ) );
+}
+
+
+std::optional<MDW_LIBRARY_TYPE> LIB_TREE_MODEL_ADAPTER::libraryType()
+{
+    switch( getLibType() )
+    {
+    case PROJECT::LIB_TYPE_T::SYMBOL_LIB:    return MDW_LIBRARY_TYPE::SYMBOL;
+    case PROJECT::LIB_TYPE_T::FOOTPRINT_LIB: return MDW_LIBRARY_TYPE::FOOTPRINT;
+    default:                                 return std::nullopt;
+    }
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::RefreshLifecycle( LIB_TREE_NODE_LIBRARY& aLibNode )
+{
+    std::optional<MDW_LIBRARY_TYPE> type = libraryType();
+
+    if( !type )
+        return;
+
+    const LIBRARY_TABLE_TYPE tableType =
+            *type == MDW_LIBRARY_TYPE::SYMBOL ? LIBRARY_TABLE_TYPE::SYMBOL : LIBRARY_TABLE_TYPE::FOOTPRINT;
+
+    if( std::optional<LIBRARY_TABLE_ROW*> row = Pgm().GetLibraryManager().GetRow( tableType, aLibNode.m_Name ) )
+        showLifecycle( aLibNode, *type, **row );
+}
+
+
+wxString LIB_TREE_MODEL_ADAPTER::lifecycleInfo( const LIB_ID& aLibId )
+{
+    std::optional<MDW_LIBRARY_TYPE> type = libraryType();
+
+    if( !type )
+        return wxEmptyString;
+
+    std::optional<MDW_PART_FACTS> facts = MDW_MEMBER_INDEX::Get().LatestFacts( *type, aLibId );
+
+    if( !facts )
+        return wxEmptyString;
+
+    return wxS( "<p><b>" ) + _( "Lifecycle" ) + wxS( ":</b> " ) + EscapeHTML( MdwPlacedStatusText( *facts ) )
+           + wxS( "</p>" );
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::FollowLifecycle()
+{
+    if( m_lifecycleListener || !libraryType() || !MDW_LIBRARY_SOURCES::TeamLibrariesEnabled() )
+        return;
+
+    m_lifecycleListener = MDW_MEMBER_INDEX::Get().Listen(
+            [this]( const MDW_MEMBER_CHANGES& aChanges )
+            {
+                RefreshLifecycle( aChanges );
+
+                if( m_widget )
+                {
+                    createMissingColumns();
+                    m_widget->Refresh();
+                }
+            } );
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::RefreshLifecycle( const MDW_MEMBER_CHANGES& aChanges )
+{
+    std::set<std::pair<wxString, wxString>> bound;
+    std::set<wxString>                      boundLocators;
+
+    for( const auto& [name, team] : m_teamLibs )
+    {
+        bound.insert( team );
+        boundLocators.insert( team.first );
+    }
+
+    auto unbound = [&]( const std::pair<wxString, wxString>& aLib )
+    {
+        return aLib.second.IsEmpty() ? !boundLocators.contains( aLib.first ) : !bound.contains( aLib );
+    };
+
+    // A plain row binds only when its source connects, which notifies all, or to a library another tree listed
+    // Walking every plain row on each listing would make a refetch quadratic
+    const bool mayBind = aChanges.all || std::ranges::any_of( aChanges.libraries, unbound );
+
+    for( std::unique_ptr<LIB_TREE_NODE>& lib : m_tree.m_Children )
+    {
+        auto team = m_teamLibs.find( lib->m_Name );
+
+        if( team == m_teamLibs.end() ? mayBind : aChanges.Has( team->second.first, team->second.second ) )
+            RefreshLifecycle( static_cast<LIB_TREE_NODE_LIBRARY&>( *lib ) );
+    }
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::UpdateItem( LIB_TREE_NODE_ITEM& aNode, LIB_TREE_ITEM* aItem )
+{
+    aNode.Update( aItem );
+
+    // The item's own Lifecycle field just replaced its source's state
+    if( LIB_TREE_NODE_LIBRARY* lib = dynamic_cast<LIB_TREE_NODE_LIBRARY*>( aNode.m_Parent ) )
+        RefreshLifecycle( *lib );
+
+    // The lifecycle pass rebuilds only parts whose state changed, and this one's text changed regardless
+    aNode.RebuildSearchTerms( m_shownColumns );
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::showLifecycle( LIB_TREE_NODE_LIBRARY& aLibNode, MDW_LIBRARY_TYPE aType,
+                                            const LIBRARY_TABLE_ROW& aRow )
+{
+    std::optional<MDW_TEAM_LIBRARY> binding = MdwTeamLibrary( aType, aRow );
+
+    if( binding )
+        m_teamLibs[aLibNode.m_Name] = { binding->source->Info().locator, binding->library_id };
+    else
+        m_teamLibs.erase( aLibNode.m_Name );
+
+    if( !binding || !binding->source->Has( MDW_CAPABILITY_GROUP::LIFECYCLE ) )
+    {
+        applyLifecycle( aLibNode, binding.has_value(), false, nullptr );
+        return;
+    }
+
+    std::map<wxString, wxString> states;
+
+    if( const std::map<wxString, MDW_MEMBER_ENTRY>* members = MDW_MEMBER_INDEX::Get().Members( *binding ) )
+    {
+        // Each call copies the source's capabilities
+        const MDW_CAPABILITIES capabilities = binding->source->Capabilities();
+
+        for( const auto& [name, entry] : *members )
+        {
+            states[name] = MDW_PART_STATE::TreeCell( MDW_MEMBER_INDEX::StateName( capabilities, entry.member.state ),
+                                                     entry.lock, false );
+        }
+
+        applyLifecycle( aLibNode, true, true, &states );
+    }
+    else
+    {
+        applyLifecycle( aLibNode, true, true, nullptr );
+    }
+}
+
+
+void LIB_TREE_MODEL_ADAPTER::applyLifecycle( LIB_TREE_NODE_LIBRARY& aLibNode, bool aTeamRow, bool aHasLifecycle,
+                                             const std::map<wxString, wxString>* aStates )
+{
+    const wxString lifecycle = _HKI( "Lifecycle" );
+
+    bool wasManaged = m_lifecycleLibs.erase( aLibNode.m_Name );
+
+    // An unmanaged library's own Lifecycle field is user data
+    if( !aTeamRow && !wasManaged )
+        return;
+
+    if( aTeamRow && aHasLifecycle )
+    {
+        m_lifecycleLibs.insert( aLibNode.m_Name );
+
+        // Released and revising parts otherwise look the same until opened
+        addColumnIfNecessary( lifecycle );
+        offerColumn( lifecycle, wxT( "Item" ) );
+    }
+
+    // Only the source's state counts, so drop any state shown while managed or written into a part's file
+    for( std::unique_ptr<LIB_TREE_NODE>& node : aLibNode.m_Children )
+    {
+        const wxString* state = nullptr;
+
+        if( aTeamRow && aHasLifecycle && aStates )
+        {
+            if( auto it = aStates->find( node->m_LibId.GetUniStringLibItemName() ); it != aStates->end() )
+                state = &it->second;
+        }
+
+        auto field = node->m_Fields.find( lifecycle );
+        bool shown = field != node->m_Fields.end();
+
+        // A refresh mostly finds every state as it was, and rebuilding search terms is its main cost
+        if( state ? shown && field->second == *state : !shown )
+            continue;
+
+        if( state )
+            node->m_Fields[lifecycle] = *state;
+        else
+            node->m_Fields.erase( field );
+
+        // Searching matches the shown fields, so it follows the states
+        node->RebuildSearchTerms( m_shownColumns );
+    }
+}
+
+
+wxString LIB_TREE_MODEL_ADAPTER::fieldText( const LIB_TREE_NODE& aNode, const wxString& aKey ) const
+{
+    auto field = aNode.m_Fields.find( aKey );
+
+    if( field == aNode.m_Fields.end() )
+        return wxEmptyString;
+
+    // Edits change with every keystroke, so they join a team part's state only as it is drawn
+    if( aKey == _HKI( "Lifecycle" ) && aNode.m_Parent && m_lifecycleLibs.contains( aNode.m_Parent->m_Name )
+        && isModified( aNode ) )
+    {
+        return MDW_PART_STATE::TreeCell( field->second, MDW_LOCK_INFO(), true );
+    }
+
+    return field->second;
+}
+
+
+wxString LIB_TREE_MODEL_ADAPTER::ClippedLifecycle( const wxDataViewItem& aItem, const wxDataViewColumn* aColumn ) const
+{
+    const wxString       lifecycle = _HKI( "Lifecycle" );
+    const LIB_TREE_NODE* node = aItem.IsOk() ? ToNode( aItem ) : nullptr;
+    auto                 column = m_colNameMap.find( lifecycle );
+
+    if( !node || !m_widget || column == m_colNameMap.end() || !aColumn || column->second != aColumn )
+        return wxEmptyString;
+
+    auto field = node->m_Fields.find( lifecycle );
+
+    if( field == node->m_Fields.end() || field->second.IsEmpty() )
+        return wxEmptyString;
+
+    // As GetValue draws it
+    wxString state = UnescapeString( field->second );
+    state.Replace( wxS( "\n" ), wxS( " " ) );
+
+    // Errs wide of any platform's cell padding, so an ellipsized state always gets its tooltip
+    int inset = m_widget->FromDIP( 16 );
+
+    if( KIUI::GetTextSize( state, m_widget ).x + inset <= aColumn->GetWidth() )
+        return wxEmptyString;
+
+    return state;
 }
 
 
@@ -593,6 +890,9 @@ int LIB_TREE_MODEL_ADAPTER::GetItemCount() const
 
     for( const std::unique_ptr<LIB_TREE_NODE>& lib: m_tree.m_Children )
     {
+        if( lib->m_IsExternalResultsGroup )
+            continue;
+
         if( m_filter )
         {
             for( const std::unique_ptr<LIB_TREE_NODE>& child : lib->m_Children )
@@ -813,10 +1113,8 @@ void LIB_TREE_MODEL_ADAPTER::GetValue( wxVariant& aVariant, const wxDataViewItem
 
             if( key == wxT( "Description" ) )
                 valueStr = UnescapeString( node->m_Desc );
-            else if( node->m_Fields.count( key ) )
-                valueStr = UnescapeString( node->m_Fields.at( key ) );
             else
-                valueStr = wxEmptyString;
+                valueStr = UnescapeString( fieldText( *node, key ) );
         }
 
         break;
@@ -836,6 +1134,12 @@ bool LIB_TREE_MODEL_ADAPTER::GetAttr( const wxDataViewItem& aItem, unsigned int 
 
     LIB_TREE_NODE* node = ToNode( aItem );
     wxCHECK( node, false );
+
+    if( node->m_Unavailable )
+    {
+        aAttr.SetColour( wxSystemSettings::GetColour( wxSYS_COLOUR_GRAYTEXT ) );
+        return true;
+    }
 
     if( node->m_Type == LIB_TREE_NODE::TYPE::ITEM )
     {

@@ -23,20 +23,28 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
+#include <cstddef>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 
 
 class KINNG_REQUEST_SERVER
 {
 public:
-    KINNG_REQUEST_SERVER( const std::string& aSocketUrl );
+    /// A nonzero aMaxMessageBytes drops any larger request unread; zero keeps nng's default
+    KINNG_REQUEST_SERVER( const std::string& aSocketUrl, std::size_t aMaxMessageBytes = 0 );
 
     ~KINNG_REQUEST_SERVER();
 
     bool Start();
 
+    /// Joins the listener, so it must not be called, nor the server destroyed, from the callback
     void Stop();
 
     bool Running() const;
@@ -55,6 +63,7 @@ private:
     std::atomic<bool> m_shutdown;
 
     std::string m_socketUrl;
+    std::size_t m_maxMessageBytes;
 
     std::function<void(std::string*)> m_callback;
 
@@ -68,6 +77,71 @@ private:
     std::condition_variable m_replyReady;
 
     std::mutex m_mutex;
+};
+
+
+/**
+ * An asynchronous nng REQ client. Each request runs on its own nng_ctx so a slow request never blocks a fast
+ * one. Completions run on a private reaper thread, and each request has its own timeout and can be cancelled.
+ */
+class KINNG_REQUEST_CLIENT
+{
+public:
+    enum class STATUS
+    {
+        RECEIVED,
+        TIMED_OUT,
+        CANCELLED,  ///< Cancel() aborted the request
+        CLOSED,     ///< Stop() aborted the request before any Cancel()
+        FAILED      ///< Any other nng failure
+    };
+
+    struct RESULT
+    {
+        STATUS      status = STATUS::FAILED;
+        std::string reply;  ///< Reply bytes when status is RECEIVED
+    };
+
+    using ON_COMPLETE = std::function<void( const RESULT& )>;
+
+    /// A nonzero aMaxMessageBytes drops any larger reply unread; zero keeps nng's default
+    KINNG_REQUEST_CLIENT( const std::string& aSocketUrl, std::size_t aMaxMessageBytes = 0 );
+
+    ~KINNG_REQUEST_CLIENT();
+
+    bool Start();
+
+    /// Cancel every in-flight request, drain completions, and close the socket.
+    /// Joins the reaper, so it must not be called, nor the client destroyed, from an ON_COMPLETE.
+    void Stop();
+
+    /**
+     * Send aPayload asynchronously. aTimeoutMs of 0 or less disables the timeout, and aOnComplete runs exactly
+     * once on the reaper thread.
+     *
+     * @return the id to pass to Cancel, or 0 if the client is not running.
+     */
+    std::uint64_t Request( const std::string& aPayload, int aTimeoutMs, ON_COMPLETE aOnComplete );
+
+    /// Best-effort abort of an in-flight request.
+    void Cancel( std::uint64_t aRequestId );
+
+    /// Block until the reply, timeout or cancellation, so never call it from the UI thread
+    RESULT RequestSync( const std::string& aPayload, int aTimeoutMs );
+
+private:
+    struct REQUEST;
+    struct IMPL;
+
+    static void aioCallback( void* aArg );
+
+    void finishRequest( REQUEST* aRequest );
+
+    void reaperThread();
+
+    std::string           m_socketUrl;
+    std::size_t           m_maxMessageBytes;
+    std::unique_ptr<IMPL> m_impl;
 };
 
 #endif //KICAD_KINNG_H

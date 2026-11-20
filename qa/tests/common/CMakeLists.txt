@@ -181,6 +181,22 @@ set( QA_COMMON_SRCS
     test_kigit_common.cpp
     test_scratch_doc.cpp
     test_kigit_orphan_registry.cpp
+    test_mdw_baseline_design.cpp
+    test_mdw_claim_text.cpp
+    test_mdw_compare_pair.cpp
+    test_mdw_event_notice.cpp
+    test_mdw_file_lock.cpp
+    test_mdw_item_locator.cpp
+    test_mdw_listed_facts.cpp
+    test_mdw_paged_read.cpp
+    test_mdw_part_actions.cpp
+    test_mdw_part_description.cpp
+    test_mdw_release_prompt.cpp
+    test_mdw_release_readiness.cpp
+    test_mdw_revision_labels.cpp
+    test_mdw_serial_worker.cpp
+    test_mdw_run_until_stopped.cpp
+    test_workspace_item_files.cpp
     test_throttle.cpp
     view/test_zoom_controller.cpp
     view/test_view_null_safety.cpp

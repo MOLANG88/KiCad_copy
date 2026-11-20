@@ -110,10 +110,12 @@ set( KICOMMON_SRCS
     git/git_compare_handler.cpp
     git/kigit_driver_registry.cpp
     git/kigit_merge_blob_utils.cpp
+    git/kigit_platform_install.cpp
     git/git_init_handler.cpp
     git/project_git_hash.cpp
     git/git_remove_vcs_handler.cpp
     git/git_switch_branch_handler.cpp
+    git/git_library_members.cpp
     git/text_diff.cpp
 
     # Diff/merge engine
@@ -252,6 +254,11 @@ set( KICOMMON_SRCS
     dialogs/dialog_rc_job_base.cpp
     dialogs/dialog_restore_local_history.cpp
     dialogs/dialog_HTML_reporter_base.cpp
+    dialogs/git/workspace_item_files.cpp
+    dialogs/dialog_mdw_release.cpp
+    dialogs/dialog_mdw_release_base.cpp
+    dialogs/mdw_library_checkin_rows.cpp
+    dialogs/git/workspace_search_query.cpp
     dialogs/panel_startwizard_libraries_base.cpp
     dialogs/panel_startwizard_privacy_base.cpp
     dialogs/panel_startwizard_settings_base.cpp
@@ -269,6 +276,7 @@ set( KICOMMON_SRCS
     widgets/indicator_icon.cpp
     widgets/kistatusbar.cpp
     widgets/kistatusbar_popup.cpp
+    widgets/mdw_change_orders.cpp
     widgets/number_badge.cpp
     widgets/progress_reporter_base.cpp
     widgets/report_severity.cpp
@@ -386,6 +394,55 @@ set( KICOMMON_SRCS
     api/python_manager.cpp
     api/serializable.cpp
 
+    mdw/client/mdw_baseline.cpp
+    mdw/client/mdw_baseline_design.cpp
+    mdw/client/mdw_bom.cpp
+    mdw/client/mdw_client.cpp
+    mdw/client/mdw_compare_doc.cpp
+    mdw/client/mdw_overwritten_parts.cpp
+    mdw/client/mdw_paged_read.cpp
+    mdw/client/mdw_pending_changes.cpp
+    mdw/client/mdw_project_follower.cpp
+    mdw/client/mdw_eco.cpp
+    mdw/client/mdw_event_notice.cpp
+    mdw/client/mdw_file_lock.cpp
+    mdw/client/mdw_library.cpp
+    mdw/client/mdw_lifecycle.cpp
+    mdw/client/mdw_library_sources.cpp
+    mdw/client/mdw_op.cpp
+    mdw/client/mdw_part.cpp
+    mdw/client/mdw_part_catalog.cpp
+    mdw/client/mdw_item.cpp
+    mdw/client/mdw_item_locator.cpp
+    mdw/client/mdw_project_file.cpp
+    mdw/client/mdw_project_ref.cpp
+    mdw/client/mdw_release_readiness.cpp
+    mdw/client/mdw_review.cpp
+    mdw/client/mdw_search.cpp
+    mdw/client/mdw_source.cpp
+    mdw/mdw_backend.cpp
+    mdw/mdw_backend_registry.cpp
+    mdw/mdw_backend_supervisor.cpp
+    mdw/mdw_claim_text.cpp
+    mdw/mdw_credentials.cpp
+    mdw/mdw_dirty_tracker.cpp
+    mdw/mdw_event_bus.cpp
+    mdw/mdw_event_ingress.cpp
+    mdw/mdw_framework.cpp
+    mdw/mdw_lock_tracker.cpp
+    mdw/mdw_setup.cpp
+    mdw/mdw_session.cpp
+    mdw/mdw_serial_worker.cpp
+    mdw/mdw_types.cpp
+    mdw/mdw_workspace_service.cpp
+    widgets/mdw_document_tracker.cpp
+    widgets/mdw_editing.cpp
+    widgets/mdw_status_pill.cpp
+    widgets/mdw_member_index.cpp
+    widgets/mdw_part_controller.cpp
+    widgets/mdw_part_state.cpp
+    mdw_part_link.cpp
+
     startwizard/startwizard.cpp
     startwizard/startwizard_provider_libraries.cpp
     startwizard/startwizard_provider_privacy.cpp
@@ -434,6 +491,7 @@ set( KIGIT_SRCS
     git/kigit_platform.cpp
     git/kigit_remote_url.cpp
     git/kigit_ssh_keys.cpp
+    git/kigit_symbol_split.cpp
     git/kigit_transport.cpp
     git/libgit_backend.cpp
     git/libgit_backend_history.cpp
@@ -492,6 +550,7 @@ set_target_properties(kicommon PROPERTIES CXX_VISIBILITY_PRESET hidden)
 target_link_libraries( kicommon
     core
     kiapi
+    mdw_runtime
     kimath
     kinng
     kiplatform
@@ -588,6 +647,7 @@ target_include_directories( kicommon
     PUBLIC
         .
         ${CMAKE_BINARY_DIR}
+        ${CMAKE_SOURCE_DIR}/mdw/runtime/include
         $<TARGET_PROPERTY:dynamic_bitset,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:magic_enum,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:pegtl,INTERFACE_INCLUDE_DIRECTORIES>
@@ -615,6 +675,9 @@ set( COMMON_ABOUT_DLG_SRCS
 
 set( COMMON_GIT_DLG_SRCS
     dialogs/git/dialog_git_switch.cpp
+    dialogs/git/dialog_mdw_design_release.cpp
+    dialogs/git/dialog_mdw_change_orders.cpp
+    dialogs/git/dialog_mdw_change_orders_base.cpp
     dialogs/git/dialog_git_credentials.cpp
     dialogs/git/git_credentials_prompt.cpp
     dialogs/git/dialog_git_credentials_base.cpp
@@ -636,6 +699,7 @@ set( COMMON_GIT_DLG_SRCS
     dialogs/git/git_status_entries.cpp
     dialogs/git/git_transfer.cpp
     dialogs/git/git_ui_utils.cpp
+    dialogs/git/merge_conflict_prompt.cpp
     dialogs/git/panel_git_branches.cpp
     dialogs/git/panel_git_branches_base.cpp
     dialogs/git/panel_git_history.cpp
@@ -648,8 +712,14 @@ set( COMMON_GIT_DLG_SRCS
     dialogs/git/panel_git_stashes_base.cpp
     dialogs/git/panel_git_tags.cpp
     dialogs/git/panel_git_tags_base.cpp
+    dialogs/git/dialog_design_workspace.cpp
+    dialogs/git/panel_git_workspace.cpp
+    dialogs/git/dialog_mdw_part_history.cpp
+    dialogs/git/panel_mdw_versions.cpp
+    dialogs/git/panel_git_workspace_base.cpp
     dialogs/git/panel_git_repos.cpp
     dialogs/git/panel_git_repos_base.cpp
+    dialogs/git/mdw_connection_prompt.cpp
 
     )
 
@@ -715,6 +785,14 @@ set( COMMON_DLG_SRCS
     dialogs/panel_color_settings.cpp
     dialogs/panel_common_settings.cpp
     dialogs/panel_common_settings_base.cpp
+    dialogs/dialog_library_source_setup.cpp
+    dialogs/dialog_mdw_library_checkin.cpp
+    dialogs/dialog_mdw_library_checkin_base.cpp
+    dialogs/dialog_workspace_config.cpp
+    widgets/mdw_library_notice.cpp
+    widgets/mdw_part_actions.cpp
+    widgets/mdw_workspace_strip.cpp
+    dialogs/panel_workspace_settings.cpp
     dialogs/panel_design_block_lib_table_base.cpp
     dialogs/panel_design_block_lib_table.cpp
     dialogs/panel_embedded_files.cpp
@@ -781,6 +859,7 @@ set( COMMON_WIDGET_SRCS
     widgets/grid_checkbox.cpp
     widgets/grid_color_swatch_helpers.cpp
     widgets/wx_infobar.cpp
+    widgets/mdw_save_prompt.cpp
     widgets/editor_tabs_panel.cpp
     widgets/kicad_tab_art.cpp
     widgets/layer_box_selector.cpp

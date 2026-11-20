@@ -20,18 +20,16 @@
 #include "dialog_git_repository.h"
 #include <confirm.h>
 #include <dialogs/git/git_credentials_prompt.h>
+#include <dialogs/git/git_ui_utils.h>
 
 #include <git2.h>
 #include <git/kicad_git_memory.h>
 #include <git/kicad_git_common.h>
+#include <git/kigit_platform.h>
 #include <git/kigit_ssh_keys.h>
 #include <git/git_repo_mixin.h>
 #include <git/kigit_transport.h>
 #include <gestfich.h>
-
-#include <cerrno>
-#include <cstring>
-#include <fstream>
 
 #include <wx/clipbrd.h>
 #include <wx/msgdlg.h>
@@ -199,8 +197,25 @@ static wxString get_repo_name( const wxString& aRepoAddr )
 void DIALOG_GIT_REPOSITORY::OnLocationExit( wxFocusEvent& event )
 {
     updateURLData();
+    fillAccount();
     updateAuthControls();
     event.Skip();
+}
+
+
+void DIALOG_GIT_REPOSITORY::fillAccount()
+{
+    const wxString url = GetRepoURL();
+
+    // A partly typed address can name another server, so only a name filled for an earlier address is replaced
+    if( url.IsEmpty() || !KIGIT_COMMON::ParseRemoteURL( url ).username.IsEmpty()
+        || ( !m_txtUsername->IsEmpty() && m_txtUsername->GetValue() != m_filledAccount ) )
+    {
+        return;
+    }
+
+    m_filledAccount = KIGIT::PlatformServices().getAccount( KIGIT::CredentialRealm( url ) );
+    SetUsername( m_filledAccount );
 }
 
 
@@ -238,6 +253,8 @@ void DIALOG_GIT_REPOSITORY::OnTestClick( wxCommandEvent& event )
 
     if( wxString( url ).Trim().Trim( false ).IsEmpty() || reportUnusableKey() )
         return;
+
+    fillAccount();
 
     wxString    error;
     wxString    details;
@@ -298,8 +315,7 @@ void DIALOG_GIT_REPOSITORY::OnTestClick( wxCommandEvent& event )
         context.operation = KIGIT_OPERATION::CONNECT;
         context.url = url;
 
-        KIGIT_FAILURE_REPORT report =
-                KIGIT::DescribeGitFailure( KIGIT::GetLastGitErrorInfo( result ), {}, context );
+        KIGIT_FAILURE_REPORT report = KIGIT::DescribeGitFailure( KIGIT::GetLastGitErrorInfo( result ), {}, context );
         error = report.summary;
         details = report.details;
     }
@@ -316,43 +332,6 @@ void DIALOG_GIT_REPOSITORY::OnTestClick( wxCommandEvent& event )
 }
 
 
-// False with aError and aDetails set when aPath is not a private key with its .pub beside it
-static bool checkSSHKey( wxString aPath, wxString& aError, wxString& aDetails, bool& aEncrypted )
-{
-    if( aPath.ends_with( wxS( ".pub" ) ) )
-        aPath = aPath.Left( aPath.size() - 4 );
-
-    std::ifstream ifs( aPath.fn_str() );
-
-    if( !ifs.good() || !ifs.is_open() )
-    {
-        aError = wxString::Format( _( "Could not open private key '%s'" ), aPath );
-        aDetails = wxString::Format( "%s: %d", std::strerror( errno ), errno );
-        return false;
-    }
-
-    std::string keyText( ( std::istreambuf_iterator<char>( ifs ) ), std::istreambuf_iterator<char>() );
-    wxString    key = wxString::FromUTF8( keyText );
-
-    if( !key.BeforeFirst( '\n' ).Contains( wxS( "PRIVATE KEY" ) ) )
-    {
-        aError = _( "Invalid SSH Key" );
-        aDetails = _( "The selected file is not a valid SSH private key" );
-        return false;
-    }
-
-    if( KIGIT::EnsurePublicKeyFile( aPath ).IsEmpty() )
-    {
-        aError = wxString::Format( _( "Could not open public key '%s'" ), aPath + wxS( ".pub" ) );
-        aDetails = _( "Put the key's .pub file beside it, or pick a key in OpenSSH format" );
-        return false;
-    }
-
-    aEncrypted = KIGIT::IsPrivateKeyEncrypted( key );
-    return true;
-}
-
-
 void DIALOG_GIT_REPOSITORY::OnFileUpdated( wxFileDirPickerEvent& aEvent )
 {
     wxString error;
@@ -360,7 +339,7 @@ void DIALOG_GIT_REPOSITORY::OnFileUpdated( wxFileDirPickerEvent& aEvent )
     bool     encrypted = false;
 
     // The picker fires on every keystroke, so a half-typed path is not an error until OK
-    if( checkSSHKey( aEvent.GetPath(), error, details, encrypted ) )
+    if( KIGIT::CheckSSHKey( aEvent.GetPath(), error, details, encrypted ) )
         SetEncrypted( encrypted );
 }
 
@@ -377,7 +356,7 @@ bool DIALOG_GIT_REPOSITORY::reportUnusableKey()
     wxString details;
     bool     encrypted = false;
 
-    if( checkSSHKey( GetRepoSSHPath(), error, details, encrypted ) )
+    if( KIGIT::CheckSSHKey( GetRepoSSHPath(), error, details, encrypted ) )
         return false;
 
     DisplayErrorMessage( this, error, details );
@@ -457,6 +436,7 @@ void DIALOG_GIT_REPOSITORY::OnOKClick( wxCommandEvent& event )
     if( reportUnusableKey() )
         return;
 
+    fillAccount();
     EndModal( wxID_OK );
 }
 
@@ -507,9 +487,14 @@ bool DIALOG_GIT_REPOSITORY::TransferDataToWindow()
         extractClipboardData();
 
     if( !m_txtURL->GetValue().IsEmpty() )
+    {
         updateURLData();
+        fillAccount();
+    }
     else
+    {
         m_ConnType->SetSelection( static_cast<int>( KIGIT_COMMON::GIT_CONN_TYPE::GIT_CONN_LOCAL ) );
+    }
 
     updateAuthControls();
 

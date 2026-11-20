@@ -29,6 +29,7 @@
 #include <wx/string.h>
 
 #include <map>
+#include <string>
 
 
 class LIB_SYMBOL;
@@ -70,8 +71,20 @@ public:
     static std::pair<std::vector<std::unique_ptr<LIB_SYMBOL>>, SYMBOL_MAP>
     LoadLibrary( const wxString& aPath );
 
+    /// LoadLibrary for the text of a .kicad_sym file. Throws IO_ERROR when any symbol fails to parse,
+    /// since a skipped symbol would read as removed
+    static std::pair<std::vector<std::unique_ptr<LIB_SYMBOL>>, SYMBOL_MAP>
+    LoadLibraryText( const std::string& aText );
+
+    /// Diff two versions of a .kicad_sym file's text into aDiff, an empty text being an empty library.
+    /// Only names the changed symbols, without property detail or bounding boxes, so it is safe off the GUI
+    /// thread. A symbol counts as changed when its parent or its flattened text differs. False when either side
+    /// does not parse.
+    static bool DiffLibraryText( const std::string& aBefore, const std::string& aAfter, DOCUMENT_DIFF* aDiff );
+
     /// True when aMerged differs from each side of a three-way merge exactly as the other side differs
-    /// from aAncestor, so no edit from either side was dropped, altered or added to
+    /// from aAncestor, so no edit from either side was dropped, altered or added to. A symbol that both
+    /// sides and aMerged save to the same text holds both sides' edits however they were reached.
     static bool MergeKeepsBothSides( const SYMBOL_MAP& aAncestor, const SYMBOL_MAP& aOurs, const SYMBOL_MAP& aTheirs,
                                      const SYMBOL_MAP& aMerged );
 

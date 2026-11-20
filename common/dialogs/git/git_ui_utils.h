@@ -20,8 +20,8 @@
 #ifndef GIT_UI_UTILS_H
 #define GIT_UI_UTILS_H
 
-#include <mutex>
 #include <git/kigit_action_lock.h>
+
 #include <vector>
 
 class KIGIT_COMMON;
@@ -71,6 +71,12 @@ wxString SelectedText( wxListCtrl* aList, int aColumn );
 
 /// Check a name and email for recording commits. False leaves the reason in aError.
 bool ValidateIdentity( const wxString& aName, const wxString& aEmail, wxString& aError );
+
+/**
+ * Whether aPath, or the private key beside it when it names a .pub, is a private key ssh can offer. False leaves
+ * the reason in aError and aDetails, and true sets aEncrypted when the key needs a passphrase.
+ */
+bool CheckSSHKey( wxString aPath, wxString& aError, wxString& aDetails, bool& aEncrypted );
 
 } // namespace KIGIT
 
