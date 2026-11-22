@@ -32,6 +32,7 @@ DIALOG_GET_FOOTPRINT_BY_NAME::DIALOG_GET_FOOTPRINT_BY_NAME( PCB_BASE_FRAME* aPar
 
     // Hide help string until someone implements successive placement (#2227)
     m_multipleHint->Show( false );
+    OptOut( m_SearchTextCtrl );
 
     SetInitialFocus( m_SearchTextCtrl );
 
