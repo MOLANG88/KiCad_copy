@@ -518,11 +518,14 @@ void COUPLED_STRIPLINE::calcZ0OddMode( const double t, const double s )
     const double Z_o_1 =
             1.0 / ( ( 1.0 / Z0_w_h_t_h ) + ( C_f_t_h / C_f_0 ) * ( ( 1.0 / Z0_o_w_h_0_s_h ) - ( 1.0 / Z0_w_h_0 ) ) );
 
-    // Reference [2], Eq. 22
+    // Reference [2], Eq. 22.  Cohn states it for an air dielectric, so in a dielectric the wave
+    // impedance is ZF0 / sqrt( er ) and the fringing capacitances are normalised to E0 * er
+    const double er = GetParameter( TCP::EPSILONR );
+    const double eta = TC::ZF0 / std::sqrt( er );
     const double Z_o_2 =
             1.0
             / ( ( 1.0 / Z0_o_w_h_0_s_h ) + ( ( 1.0 / Z0_w_h_t_h ) - ( 1.0 / Z0_w_h_0 ) )
-                - ( 2.0 / TC::ZF0 ) * ( C_f_t_h / TC::E0 - C_f_0 / TC::E0 ) + ( 2.0 * t ) / ( TC::ZF0 * s ) );
+                - ( 2.0 / eta ) * ( C_f_t_h - C_f_0 ) / ( TC::E0 * er ) + ( 2.0 * t ) / ( eta * s ) );
 
     const double Z_o = s / t >= 5.0 ? Z_o_1 : Z_o_2;
 

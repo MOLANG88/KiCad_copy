@@ -434,4 +434,61 @@ BOOST_AUTO_TEST_CASE( TuningProfileZeroThicknessSignalMatchesTopDielectric )
 }
 
 
+namespace
+{
+double DiffImpedanceAtGap( double topDielectric, double signal, double bottomDielectric, double width, double gap )
+{
+    Geometry g{ topDielectric + signal + bottomDielectric, width, gap, signal, 4.5, 1.0e9, 100.0 * TC::UNIT_MM };
+
+    const double striplineA = topDielectric == bottomDielectric ? -1.0 : topDielectric + 0.5 * signal;
+
+    COUPLED_STRIPLINE calc = MakeCalc( g, striplineA );
+    return Run( calc ).zdiff;
+}
+} // namespace
+
+
+// Issue 26100: Zdiff fell by 12-18 % where calcZ0OddMode() switches from Cohn Eq. 22 to Eq. 20 at s = 5t
+BOOST_AUTO_TEST_CASE( DiffImpedanceContinuousAtThickStripSwitch )
+{
+    const double signal = 0.035 * TC::UNIT_MM;
+    const double width = 0.05 * TC::UNIT_MM;
+    const double switchGap = 5.0 * signal;
+
+    for( const auto& [top, bottom] : { std::pair{ 0.25, 0.25 }, std::pair{ 0.1, 0.25 } } )
+    {
+        const double below = DiffImpedanceAtGap( top * TC::UNIT_MM, signal, bottom * TC::UNIT_MM, width,
+                                                 switchGap * ( 1.0 - 1e-6 ) );
+        const double above = DiffImpedanceAtGap( top * TC::UNIT_MM, signal, bottom * TC::UNIT_MM, width,
+                                                 switchGap * ( 1.0 + 1e-6 ) );
+
+        BOOST_TEST_INFO( "top " << top << " mm, bottom " << bottom << " mm" );
+        BOOST_TEST( std::abs( above - below ) / above < 0.05 );
+    }
+}
+
+
+// Issue 26100: on an asymmetric stackup the gap solver found impossible gaps because Zdiff rose above
+// its wide-gap value just below s = 5t and then dropped
+BOOST_AUTO_TEST_CASE( OffsetDiffImpedanceRisesWithGap )
+{
+    const double top = 0.1 * TC::UNIT_MM;
+    const double signal = 0.035 * TC::UNIT_MM;
+    const double bottom = 0.25 * TC::UNIT_MM;
+    const double width = 0.05 * TC::UNIT_MM;
+
+    double previous = 0.0;
+
+    for( int step = 1; step <= 100; ++step )
+    {
+        const double gap = step * 0.01 * TC::UNIT_MM;
+        const double zdiff = DiffImpedanceAtGap( top, signal, bottom, width, gap );
+
+        BOOST_TEST_INFO( "gap " << step * 0.01 << " mm" );
+        BOOST_TEST( zdiff >= previous );
+        previous = zdiff;
+    }
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
