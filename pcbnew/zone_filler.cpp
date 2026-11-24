@@ -1008,14 +1008,10 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
 
                 SHAPE_POLY_SET fillPolys;
 
-                auto fillStart = std::chrono::steady_clock::now();
-
                 if( !fillSingleZone( zone, layer, fillPolys ) )
                     return 0;
 
                 zone->SetFilledPolysList( layer, fillPolys );
-
-                report_fill( zone, layer, fillStart );
 
                 if( m_progressReporter )
                     m_progressReporter->AdvanceProgress();
@@ -1165,6 +1161,10 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 process =
                         [&]( size_t idx )
                         {
+                            // Tessellation is a separate step but the user waits through both,
+                            // so the reported time covers the pair.
+                            auto start = std::chrono::steady_clock::now();
+
                             int filled = aFillFn( aFillItems[idx] );
 
                             // Release dependents; their fills read this one's now-published result.
@@ -1176,6 +1176,9 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
 
                             if( filled != 0 && !cancelled.load() )
                                 aTessFn( aFillItems[idx] );
+
+                            if( filled != 0 )
+                                report_fill( aFillItems[idx].first, aFillItems[idx].second, start );
 
                             remaining.fetch_sub( 1, std::memory_order_acq_rel );
                         };
@@ -1581,15 +1584,11 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                         PCB_LAYER_ID   layer = aFillItem.second;
                         SHAPE_POLY_SET fillPolys;
 
-                        auto fillStart = std::chrono::steady_clock::now();
-
                         if( !refillZoneFromCache( zone, layer, fillPolys, &snapshot ) )
                             return 0;
 
                         zone->SetFilledPolysList( layer, fillPolys );
                         zone->SetFillFlag( layer, false );
-
-                        report_fill( zone, layer, fillStart );
 
                         return 1;
                     };
