@@ -27,6 +27,7 @@
 #include <future>
 #include <thread>
 #include <wx/filename.h>
+#include <wx/log.h>
 #include <hash.h>
 #include <mmh3_hash.h>
 #include <set>
@@ -65,6 +66,8 @@
 #include "project.h"
 #include "project/project_local_settings.h"
 #include "pcb_barcode.h"
+
+static const wxChar* const traceZoneFiller = wxT( "KICAD_ZONE_FILLER" );
 
 // Helper classes for connect_nearby_polys
 class RESULTS
@@ -1506,18 +1509,17 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
             if( !progressReported )
             {
                 if( m_progressReporter )
+                {
                     m_progressReporter->AdvancePhase();
+                    m_progressReporter->Report( _( "Refilling overlapping zones..." ) );
+                    m_progressReporter->KeepRefreshing();
+                }
 
                 progressReported = true;
             }
 
-            if( m_progressReporter )
-            {
-                m_progressReporter->Report(
-                        wxString::Format( _( "Refilling overlapping zones, pass %d of %d (%d fills)..." ),
-                                          iteration + 1, maxIterations, (int) zonesToRefill.size() ) );
-                m_progressReporter->KeepRefreshing();
-            }
+            wxLogTrace( traceZoneFiller, wxT( "Overlap refill pass %d of %d, %d fills" ), iteration + 1,
+                        maxIterations, (int) zonesToRefill.size() );
 
             // Snapshot hashes before the wave for convergence detection.  Only zones in
             // zonesToRefill can change their fill this wave (refill writes them; subsequent
@@ -1568,14 +1570,10 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                                               }
                                           } );
 
-            if( m_progressReporter )
-            {
-                std::chrono::duration<double> snapshotElapsed = std::chrono::steady_clock::now() - snapshotStart;
+            std::chrono::duration<double> snapshotElapsed = std::chrono::steady_clock::now() - snapshotStart;
 
-                m_progressReporter->Report( wxString::Format( _( "Snapshotting fills for pass %d took %.2f s" ),
-                                                              iteration + 1, snapshotElapsed.count() ) );
-                m_progressReporter->KeepRefreshing();
-            }
+            wxLogTrace( traceZoneFiller, wxT( "Snapshot for pass %d took %.3f s" ), iteration + 1,
+                        snapshotElapsed.count() );
 
             auto cached_refill_fill_lambda =
                     [&]( const std::pair<ZONE*, PCB_LAYER_ID>& aFillItem ) -> int
