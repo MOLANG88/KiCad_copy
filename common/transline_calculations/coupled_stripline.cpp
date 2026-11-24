@@ -165,11 +165,19 @@ bool COUPLED_STRIPLINE::Synthesize( const SYNTHESIZE_OPTS aOpts )
         SetParameter( TCP::Z0_E, 2.0 * zCommTarget );
     }
 
-    if( aOpts == SYNTHESIZE_OPTS::FIX_WIDTH )
-        return MinimiseZ0Error1D( TCP::PHYS_S, TCP::Z0_O, false );
+    if( aOpts == SYNTHESIZE_OPTS::FIX_WIDTH || aOpts == SYNTHESIZE_OPTS::FIX_SPACING )
+    {
+        const TCP unknown = aOpts == SYNTHESIZE_OPTS::FIX_WIDTH ? TCP::PHYS_S : TCP::PHYS_WIDTH;
 
-    if( aOpts == SYNTHESIZE_OPTS::FIX_SPACING )
-        return MinimiseZ0Error1D( TCP::PHYS_WIDTH, TCP::Z0_O, false );
+        if( MinimiseZ0Error1D( unknown, TCP::Z0_O, false ) )
+            return true;
+
+        // When no value reaches the target, e.g. a track too wide for the target Zdiff even with an
+        // infinite gap, the solver stops wherever it gave up, which can be metres away.  Report the
+        // unknown as invalid so it is not published as a result.
+        SetParameter( unknown, std::numeric_limits<double>::quiet_NaN() );
+        return false;
+    }
 
     // This synthesis approach is modified from wcalc, which is released under GPL version 2
     // Copyright (C) 1999, 2000, 2001, 2002, 2003, 2004, 2006 Dan McMahill
