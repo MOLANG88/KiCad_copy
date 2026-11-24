@@ -22,6 +22,8 @@
 
 #include <optional>
 
+#include <wx/weakref.h>
+
 #include <core/throttle.h>
 #include <dialog_shim.h>
 #include <widgets/panel_zone_fill_report.h>
@@ -51,6 +53,28 @@ public:
 
     /// Safe to call from a fill worker thread.
     void QueueRecord( const ZONE_FILL_RECORD& aRecord );
+
+    /**
+     * Holds the window in its running state for as long as it exists.
+     *
+     * The window refuses to close while it is running, so the flag has to be cleared even if
+     * the fill leaves through an exception. The reference is weak because the window destroys
+     * itself when it is set to close automatically.
+     */
+    class RUN_GUARD
+    {
+    public:
+        RUN_GUARD( DIALOG_ZONE_FILL_PROGRESS* aDialog ) : m_dialog( aDialog ) {}
+
+        ~RUN_GUARD()
+        {
+            if( m_dialog )
+                m_dialog->m_running = false;
+        }
+
+    private:
+        wxWeakRef<DIALOG_ZONE_FILL_PROGRESS> m_dialog;
+    };
 
     /// The fill proper is over, so nothing is cancellable any more.
     void DisableCancel();

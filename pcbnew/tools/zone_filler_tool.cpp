@@ -198,6 +198,8 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     DIALOG_ZONE_FILL_PROGRESS*        fillDialog = nullptr;
     std::unique_ptr<wxWindowDisabler> disabler;
 
+    std::unique_ptr<DIALOG_ZONE_FILL_PROGRESS::RUN_GUARD> fillDialogGuard;
+
     teardropMgr.UpdateTeardrops( commit, nullptr, nullptr, true /* forceFullUpdate */ );
 
     board()->IncrementTimeStamp();    // Clear caches
@@ -232,6 +234,7 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     else if( !aHeadless )
     {
         fillDialog = new DIALOG_ZONE_FILL_PROGRESS( frame );
+        fillDialogGuard = std::make_unique<DIALOG_ZONE_FILL_PROGRESS::RUN_GUARD>( fillDialog );
 
         // Keep the editor inert while the fill runs, the way the old progress dialog did.
         // The window only becomes a companion once the fill has finished.
