@@ -300,7 +300,11 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     {
         std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - fillStart;
 
-        progress->Report( wxString::Format( _( "Zone fill finished in %.2f s" ), elapsed.count() ) );
+        if( progress->IsCancelled() )
+            progress->Report( wxString::Format( _( "Zone fill cancelled after %.2f s" ), elapsed.count() ) );
+        else
+            progress->Report( wxString::Format( _( "Zone fill finished in %.2f s" ), elapsed.count() ) );
+
         progress->KeepRefreshing();
     }
 
