@@ -233,7 +233,19 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     }
     else if( !aHeadless )
     {
-        fillDialog = new DIALOG_ZONE_FILL_PROGRESS( frame );
+        if( m_fillDialog )
+        {
+            // The last fill left its window open, so use it again.
+            fillDialog = m_fillDialog;
+            fillDialog->Restart();
+            fillDialog->Raise();
+        }
+        else
+        {
+            fillDialog = new DIALOG_ZONE_FILL_PROGRESS( frame );
+            m_fillDialog = fillDialog;
+        }
+
         fillDialogGuard = std::make_unique<DIALOG_ZONE_FILL_PROGRESS::RUN_GUARD>( fillDialog );
 
         // Keep the editor inert while the fill runs, the way the old progress dialog did.
@@ -313,7 +325,7 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
 
     disabler.reset();
 
-    // True when no window is left on screen, so the canvas should take the keyboard back.
+    // The canvas only takes the keyboard back if no window is left on screen.
     bool fillDialogClosed = true;
 
     if( fillDialog )

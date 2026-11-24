@@ -76,6 +76,9 @@ public:
         wxWeakRef<DIALOG_ZONE_FILL_PROGRESS> m_dialog;
     };
 
+    /// Put a window left open by the last fill back into its starting state.
+    void Restart();
+
     /// The fill proper is over, so nothing is cancellable any more.
     void DisableCancel();
 

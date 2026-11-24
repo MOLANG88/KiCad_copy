@@ -25,6 +25,8 @@
 
 #include <functional>
 
+#include <wx/weakref.h>
+
 #include <tools/pcb_tool_base.h>
 #include <zone.h>
 
@@ -35,6 +37,7 @@ class WX_PROGRESS_REPORTER;
 class ZONE_FILLER;
 class PCB_GENERATOR;
 class BOARD_COMMIT;
+class DIALOG_ZONE_FILL_PROGRESS;
 struct ZONE_FILL_RECORD;
 
 #define ZONE_FILLER_TOOL_NAME "pcbnew.ZoneFiller"
@@ -109,6 +112,9 @@ private:
     bool                         m_fillInProgress;
 
     std::set<KIID>               m_dirtyZoneIDs;
+
+    /// Kept open between fills when the user turned the automatic close off.
+    wxWeakRef<DIALOG_ZONE_FILL_PROGRESS> m_fillDialog;
 };
 
 #endif

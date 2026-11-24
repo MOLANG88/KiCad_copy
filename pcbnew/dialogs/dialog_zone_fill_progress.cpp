@@ -199,6 +199,33 @@ bool DIALOG_ZONE_FILL_PROGRESS::updateUI()
 }
 
 
+void DIALOG_ZONE_FILL_PROGRESS::Restart()
+{
+    m_running = true;
+    m_cancelled.store( false );
+    m_createdAt = std::chrono::steady_clock::now();
+    m_pendingFocus.reset();
+
+    m_fillLog.Clear();
+    m_log->Clear();
+    m_log->Flush();
+    m_reportPanel->Clear();
+
+    if( m_notebook->GetPageCount() > 1 )
+        m_notebook->RemovePage( 1 );
+
+    m_reportPanel->Hide();
+    m_notebook->ChangeSelection( 0 );
+
+    m_closeButton->SetLabel( _( "Cancel" ) );
+    m_closeButton->Enable( true );
+    m_gauge->SetValue( 0 );
+
+    SetNumPhases( 5 );
+    BeginPhase( 0 );
+}
+
+
 void DIALOG_ZONE_FILL_PROGRESS::DisableCancel()
 {
     m_closeButton->Enable( false );
