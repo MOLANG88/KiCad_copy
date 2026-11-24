@@ -25,6 +25,7 @@
 #include <board.h>
 #include <math/util.h>
 #include <reporter.h>
+#include <string_utils.h>
 #include <zone_fill_log.h>
 
 #define ZONE_FILL_HREF_PREFIX wxT( "$ZONE_FILL:" )
@@ -129,7 +130,8 @@ wxString ZONE_FILL_LOG::Summary() const
     const ZONE_FILL_RECORD& slowest = totals.front().m_record;
 
     return wxString::Format( _( "Filled %d zone layers in %d fills. Slowest was %s on %s at %s." ), (int) totals.size(),
-                             (int) m_records.size(), slowest.m_label, m_board->GetLayerName( slowest.m_layer ),
+                             (int) m_records.size(), EscapeHTML( slowest.m_label ),
+                             EscapeHTML( m_board->GetLayerName( slowest.m_layer ) ),
                              FormatTime( slowest.m_seconds ) );
 }
 
@@ -145,9 +147,12 @@ wxString ZONE_FILL_LOG::FormatTime( double aSeconds )
 
 wxString ZONE_FILL_LOG::formatLine( const ZONE_FILL_RECORD& aRecord ) const
 {
+    // A zone or net name can hold anything the user typed, including angle brackets.
     return wxString::Format( wxT( "%s<a href='%s%s:%d'>%s</a>&nbsp;&nbsp;%s&nbsp;&nbsp;%s" ), ZONE_FILL_LINE_INDENT,
-                             ZONE_FILL_HREF_PREFIX, aRecord.m_zoneId.AsString(), (int) aRecord.m_layer, aRecord.m_label,
-                             m_board->GetLayerName( aRecord.m_layer ), FormatTime( aRecord.m_seconds ) );
+                             ZONE_FILL_HREF_PREFIX, aRecord.m_zoneId.AsString(), (int) aRecord.m_layer,
+                             EscapeHTML( aRecord.m_label ),
+                             EscapeHTML( m_board->GetLayerName( aRecord.m_layer ) ),
+                             FormatTime( aRecord.m_seconds ) );
 }
 
 
