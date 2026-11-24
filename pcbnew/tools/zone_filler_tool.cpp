@@ -32,6 +32,9 @@
 #include <progress_reporter.h>
 #include <widgets/wx_infobar.h>
 #include <widgets/wx_progress_reporters.h>
+#include <dialogs/dialog_zone_fill_progress.h>
+#include <wx/utils.h>
+#include <chrono>
 #include <wx/event.h>
 #include <wx/hyperlink.h>
 #include <tool/tool_manager.h>
@@ -177,7 +180,8 @@ void ZONE_FILLER_TOOL::singleShotRefocus( wxIdleEvent& )
 }
 
 
-bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aReporter, bool aHeadless )
+bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aReporter, bool aHeadless,
+                                     std::function<void( const ZONE_FILL_RECORD& )> aFillRecordSink )
 {
     if( m_fillInProgress )
         return false;
@@ -188,10 +192,11 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     if( !aHeadless )
         frame = getEditFrame<PCB_EDIT_FRAME>();
 
-    BOARD_COMMIT                          commit( this );
-    std::unique_ptr<WX_PROGRESS_REPORTER> reporter;
-    TEARDROP_MANAGER                      teardropMgr( board(), m_toolMgr );
-    std::vector<ZONE*>                    toFill;
+    BOARD_COMMIT                      commit( this );
+    TEARDROP_MANAGER                  teardropMgr( board(), m_toolMgr );
+    std::vector<ZONE*>                toFill;
+    DIALOG_ZONE_FILL_PROGRESS*        fillDialog = nullptr;
+    std::unique_ptr<wxWindowDisabler> disabler;
 
     teardropMgr.UpdateTeardrops( commit, nullptr, nullptr, true /* forceFullUpdate */ );
 
@@ -201,6 +206,9 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
         toFill.push_back( zone );
 
     m_filler = std::make_unique<ZONE_FILLER>( board(), &commit );
+    m_filler->SetFillRecordSink( std::move( aFillRecordSink ) );
+
+    auto fillStart = std::chrono::steady_clock::now();
 
     if( !aHeadless && !board()->GetDesignSettings().m_DRCEngine->RulesValid() )
     {
@@ -223,25 +231,56 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     }
     else if( !aHeadless )
     {
-        reporter = std::make_unique<WX_PROGRESS_REPORTER>( aCaller, _( "Fill All Zones" ), 5, PR_CAN_ABORT );
-        m_filler->SetProgressReporter( reporter.get() );
+        fillDialog = new DIALOG_ZONE_FILL_PROGRESS( frame );
+
+        // Keep the editor inert while the fill runs, the way the old progress dialog did.
+        // The window only becomes a companion once the fill has finished.
+        disabler = std::make_unique<wxWindowDisabler>( fillDialog );
+
+        m_filler->SetProgressReporter( fillDialog );
+        m_filler->SetFillRecordSink(
+                [fillDialog]( const ZONE_FILL_RECORD& aRecord )
+                {
+                    fillDialog->QueueRecord( aRecord );
+                } );
     }
 
     bool filled = false;
 
-    if( m_filler->Fill( toFill ) )
+    auto report = [&]( const wxString& aMessage )
+    {
+        if( PROGRESS_REPORTER* progress = m_filler->GetProgressReporter() )
+        {
+            progress->Report( aMessage );
+            progress->KeepRefreshing();
+        }
+    };
+
+    bool fillSucceeded = m_filler->Fill( toFill );
+
+    // Nothing from here on can be interrupted, so stop offering.
+    if( fillDialog )
+        fillDialog->DisableCancel();
+
+    if( fillSucceeded )
     {
         if( m_filler->GetProgressReporter() )
             m_filler->GetProgressReporter()->AdvancePhase();
+
+        report( _( "Updating generators..." ) );
 
         // First pass on allowing generators like via-stitch to update
         board()->OnZonesFilled( toFill );
         std::vector<PCB_GENERATOR*> regenerated = RegenerateDirtyGenerators( commit );
 
+        report( _( "Saving undo state..." ) );
+
         commit.Push( _( "Fill Zone(s)" ), SKIP_CONNECTIVITY | ZONE_FILL_OP );
 
         if( !aHeadless )
             frame->m_ZoneFillsDirty = false;
+
+        report( _( "Refilling around generators..." ) );
 
         // Refill again as generators like via stitches can cause punch outs
         refillAroundGenerators( regenerated );
@@ -253,7 +292,22 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
         commit.Revert();
     }
 
-    PostFillRefresh( aHeadless );
+    report( _( "Rebuilding connectivity..." ) );
+
+    PostFillRefresh( aHeadless, m_filler->GetProgressReporter() );
+
+    if( PROGRESS_REPORTER* progress = m_filler->GetProgressReporter() )
+    {
+        std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - fillStart;
+
+        progress->Report( wxString::Format( _( "Zone fill finished in %.2f s" ), elapsed.count() ) );
+        progress->KeepRefreshing();
+    }
+
+    disabler.reset();
+
+    if( fillDialog )
+        fillDialog->FillComplete();
 
     if( !aHeadless && m_filler->IsDebug() )
         frame->UpdateUserInterface();
@@ -523,18 +577,18 @@ PROGRESS_REPORTER* ZONE_FILLER_TOOL::GetProgressReporter()
 }
 
 
-void ZONE_FILLER_TOOL::PostFillRefresh( bool aHeadless )
+void ZONE_FILLER_TOOL::PostFillRefresh( bool aHeadless, PROGRESS_REPORTER* aReporter )
 {
-    rebuildConnectivity( aHeadless );
+    rebuildConnectivity( aHeadless, aReporter );
 
     if( !aHeadless )
         refresh();
 }
 
 
-void ZONE_FILLER_TOOL::rebuildConnectivity( bool aHeadless )
+void ZONE_FILLER_TOOL::rebuildConnectivity( bool aHeadless, PROGRESS_REPORTER* aReporter )
 {
-    board()->BuildConnectivity();
+    board()->BuildConnectivity( aReporter );
     m_toolMgr->PostEvent( EVENTS::ConnectivityChangedEvent );
     if( !aHeadless )
         canvas()->RedrawRatsnest();

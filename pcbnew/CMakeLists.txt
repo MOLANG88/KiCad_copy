@@ -195,6 +195,7 @@ set( PCBNEW_DIALOGS
     dialogs/dialog_update_pcb_base.cpp
     dialogs/dialog_via_stitch_properties.cpp
     dialogs/dialog_via_stitch_properties_base.cpp
+    dialogs/dialog_zone_fill_progress.cpp
     dialogs/dialog_multichannel_generate_rule_areas_base.cpp
     dialogs/dialog_multichannel_generate_rule_areas.cpp
     dialogs/dialog_multichannel_repeat_layout_base.cpp
@@ -500,6 +501,7 @@ set( PCBNEW_CLASS_SRCS
     tracks_cleaner.cpp
     undo_group_state.cpp
     undo_redo.cpp
+    zone_fill_log.cpp
     zone_filler.cpp
     zone_settings_bag.cpp
     edit_zone_helpers.cpp
@@ -575,6 +577,7 @@ set( PCBNEW_CLASS_SRCS
     widgets/panel_footprint_chooser.cpp
     widgets/panel_selection_filter.cpp
     widgets/panel_selection_filter_base.cpp
+    widgets/panel_zone_fill_report.cpp
     widgets/pcb_design_block_pane.cpp
     widgets/pcb_design_block_preview_widget.cpp
     widgets/pcb_properties_panel.cpp

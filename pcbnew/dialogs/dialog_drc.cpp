@@ -108,6 +108,7 @@ DIALOG_DRC::DIALOG_DRC( PCB_EDIT_FRAME* aEditorFrame, wxWindow* aParent ) :
 
     m_frame = aEditorFrame;
     m_currentBoard = m_frame->GetBoard();
+    m_zoneFillLog.SetBoard( m_currentBoard );
 
     m_bMenu->SetBitmap( KiBitmapBundle( BITMAPS::config ) );
 
@@ -320,6 +321,8 @@ void DIALOG_DRC::OnActivateDlg( wxActivateEvent& aEvent )
 
 bool DIALOG_DRC::updateUI()
 {
+    drainZoneFillLog();
+
     if( m_maxProgress != 0 )
     {
         double cur = std::clamp( (double) m_progress.load() / m_maxProgress, 0.0, 1.0 );
@@ -369,8 +372,42 @@ void DIALOG_DRC::AdvancePhase( const wxString& aMessage )
 {
     PROGRESS_REPORTER_BASE::AdvancePhase( aMessage );
     SetCurrentProgress( 0.0 );
+}
 
-    m_messages->Report( aMessage );
+
+void DIALOG_DRC::Report( const wxString& aMessage )
+{
+    PROGRESS_REPORTER_BASE::Report( aMessage );
+
+    // Through the same queue as the fills, so a heading keeps its place among them.
+    if( m_messageChanged )
+    {
+        m_zoneFillLog.QueueMessage( aMessage );
+        m_messageChanged = false;
+    }
+}
+
+
+void DIALOG_DRC::QueueZoneFillRecord( const ZONE_FILL_RECORD& aRecord )
+{
+    m_zoneFillLog.QueueRecord( aRecord );
+}
+
+
+void DIALOG_DRC::drainZoneFillLog()
+{
+    m_zoneFillLog.Drain( m_messages );
+}
+
+
+void DIALOG_DRC::focusOnZone( const KIID& aZoneId, PCB_LAYER_ID aLayer )
+{
+    BOARD_ITEM* zone = m_currentBoard->ResolveItem( aZoneId, true );
+
+    if( !zone )
+        return;
+
+    m_frame->FocusOnItems( { zone }, aLayer, m_scroll_on_crossprobe );
 }
 
 
@@ -433,6 +470,16 @@ void DIALOG_DRC::OnMenu( wxCommandEvent& event )
 
 void DIALOG_DRC::OnErrorLinkClicked( wxHtmlLinkEvent& event )
 {
+    wxString     href = event.GetLinkInfo().GetHref();
+    KIID         zoneId;
+    PCB_LAYER_ID layer;
+
+    if( ZONE_FILL_LOG::ParseHref( href, zoneId, layer ) )
+    {
+        focusOnZone( zoneId, layer );
+        return;
+    }
+
     m_frame->ShowBoardSetupDialog( _( "Custom Rules" ), this );
 }
 
@@ -533,6 +580,9 @@ void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
 
     m_runningResultsBook->ChangeSelection( 0 );   // Display the "Tests Running..." tab
     m_messages->Clear();
+
+    m_zoneFillLog.Clear();
+
     Update();                                     // Repaint only, don't enter the full event loop
 
     m_running = true;
@@ -566,6 +616,8 @@ void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
 
                 return wxString::Format( wxS( "%.2f s" ), elapsedMs / 1000.0 );
             };
+
+    drainZoneFillLog();
 
     if( m_cancelled )
     {

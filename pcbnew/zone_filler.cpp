@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <future>
@@ -979,6 +980,24 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 return check_fill_dependency( aWaiter.first, aWaiter.second, aDependency.first );
             };
 
+    auto report_fill = [&]( ZONE* aZone, PCB_LAYER_ID aLayer, const std::chrono::steady_clock::time_point& aStart )
+    {
+        if( !m_fillRecordSink )
+            return;
+
+        std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - aStart;
+
+        wxString label = aZone->GetZoneName();
+
+        if( label.IsEmpty() )
+            label = aZone->GetNetname();
+
+        if( label.IsEmpty() )
+            label = _( "No net" );
+
+        m_fillRecordSink( { aZone->m_Uuid, aLayer, label, elapsed.count() } );
+    };
+
     auto fill_lambda =
             [&]( std::pair<ZONE*, PCB_LAYER_ID> aFillItem ) -> int
             {
@@ -990,10 +1009,14 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
 
                 SHAPE_POLY_SET fillPolys;
 
+                auto fillStart = std::chrono::steady_clock::now();
+
                 if( !fillSingleZone( zone, layer, fillPolys ) )
                     return 0;
 
                 zone->SetFilledPolysList( layer, fillPolys );
+
+                report_fill( zone, layer, fillStart );
 
                 if( m_progressReporter )
                     m_progressReporter->AdvanceProgress();
@@ -1191,6 +1214,10 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 while( inFlight.load( std::memory_order_acquire ) > 0 )
                     std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
             };
+
+    // AdvanceProgress() counts fill items, not zones.
+    if( m_progressReporter )
+        m_progressReporter->SetMaxProgress( toFill.size() );
 
     run_fill_waves( toFill, fill_lambda, tesselate_lambda, fill_item_dependency, true );
 
@@ -1472,13 +1499,17 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
             if( !progressReported )
             {
                 if( m_progressReporter )
-                {
                     m_progressReporter->AdvancePhase();
-                    m_progressReporter->Report( _( "Refilling overlapping zones..." ) );
-                    m_progressReporter->KeepRefreshing();
-                }
 
                 progressReported = true;
+            }
+
+            if( m_progressReporter )
+            {
+                m_progressReporter->Report(
+                        wxString::Format( _( "Refilling overlapping zones, pass %d of %d (%d fills)..." ),
+                                          iteration + 1, maxIterations, (int) zonesToRefill.size() ) );
+                m_progressReporter->KeepRefreshing();
             }
 
             // Snapshot hashes before the wave for convergence detection.  Only zones in
@@ -1506,6 +1537,7 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 snapshotLayers.set( layer );
 
             FillSnapshot snapshot;
+            auto         snapshotStart = std::chrono::steady_clock::now();
 
             forEachBoardAndFootprintZone( m_board,
                                           [&]( ZONE* zone )
@@ -1529,6 +1561,15 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                                               }
                                           } );
 
+            if( m_progressReporter )
+            {
+                std::chrono::duration<double> snapshotElapsed = std::chrono::steady_clock::now() - snapshotStart;
+
+                m_progressReporter->Report( wxString::Format( _( "Snapshotting fills for pass %d took %.2f s" ),
+                                                              iteration + 1, snapshotElapsed.count() ) );
+                m_progressReporter->KeepRefreshing();
+            }
+
             auto cached_refill_fill_lambda =
                     [&]( const std::pair<ZONE*, PCB_LAYER_ID>& aFillItem ) -> int
                     {
@@ -1536,11 +1577,16 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                         PCB_LAYER_ID   layer = aFillItem.second;
                         SHAPE_POLY_SET fillPolys;
 
+                        auto fillStart = std::chrono::steady_clock::now();
+
                         if( !refillZoneFromCache( zone, layer, fillPolys, &snapshot ) )
                             return 0;
 
                         zone->SetFilledPolysList( layer, fillPolys );
                         zone->SetFillFlag( layer, false );
+
+                        report_fill( zone, layer, fillStart );
+
                         return 1;
                     };
 
