@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <wx/app.h>
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/gauge.h>
