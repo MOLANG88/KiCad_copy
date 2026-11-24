@@ -159,5 +159,6 @@ private:
     int                                   m_lastTickSeconds;
 
     ZONE_FILL_LOG m_zoneFillLog;
+    THROTTLE      m_zoneFillThrottle;
 };
 

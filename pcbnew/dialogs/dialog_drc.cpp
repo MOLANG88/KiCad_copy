@@ -101,7 +101,8 @@ DIALOG_DRC::DIALOG_DRC( PCB_EDIT_FRAME* aEditorFrame, wxWindow* aParent ) :
         m_updateThrottle( std::chrono::milliseconds( 100 ) ),
         m_yieldThrottle( std::chrono::milliseconds( 2000 ) ),
         m_drcStatusBar( nullptr ),
-        m_lastTickSeconds( -1 )
+        m_lastTickSeconds( -1 ),
+        m_zoneFillThrottle( std::chrono::milliseconds( 1000 ) )
 {
     SetName( DIALOG_DRC_WINDOW_NAME ); // Set a window name to be able to find it
     KIPLATFORM::UI::SetFloatLevel( this );
@@ -321,7 +322,8 @@ void DIALOG_DRC::OnActivateDlg( wxActivateEvent& aEvent )
 
 bool DIALOG_DRC::updateUI()
 {
-    drainZoneFillLog();
+    if( m_zoneFillThrottle.Ready() )
+        drainZoneFillLog();
 
     if( m_maxProgress != 0 )
     {
@@ -396,7 +398,12 @@ void DIALOG_DRC::QueueZoneFillRecord( const ZONE_FILL_RECORD& aRecord )
 
 void DIALOG_DRC::drainZoneFillLog()
 {
+    // Each report in immediate mode rebuilds the whole page, so write the batch with it off.
+    m_messages->SetImmediateMode( false );
     m_zoneFillLog.Drain( m_messages );
+    m_messages->SetImmediateMode( true );
+    m_messages->Flush();
+    m_messages->ScrollToBottom();
 }
 
 

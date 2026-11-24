@@ -43,6 +43,7 @@ DIALOG_ZONE_FILL_PROGRESS::DIALOG_ZONE_FILL_PROGRESS( PCB_EDIT_FRAME* aFrame ) :
         m_autoClose( nullptr ),
         m_closeButton( nullptr ),
         m_running( true ),
+        m_drainThrottle( std::chrono::milliseconds( 1000 ) ),
         m_createdAt( std::chrono::steady_clock::now() ),
         m_updateThrottle( std::chrono::milliseconds( 100 ) ),
         m_yieldThrottle( std::chrono::milliseconds( 2000 ) )
@@ -147,6 +148,17 @@ void DIALOG_ZONE_FILL_PROGRESS::QueueRecord( const ZONE_FILL_RECORD& aRecord )
 }
 
 
+void DIALOG_ZONE_FILL_PROGRESS::drainLog()
+{
+    // Each report in immediate mode rebuilds the whole page, so write the batch with it off.
+    m_log->SetImmediateMode( false );
+    m_fillLog.Drain( m_log );
+    m_log->SetImmediateMode( true );
+    m_log->Flush();
+    m_log->ScrollToBottom();
+}
+
+
 void DIALOG_ZONE_FILL_PROGRESS::Report( const wxString& aMessage )
 {
     PROGRESS_REPORTER_BASE::Report( aMessage );
@@ -162,7 +174,8 @@ void DIALOG_ZONE_FILL_PROGRESS::Report( const wxString& aMessage )
 
 bool DIALOG_ZONE_FILL_PROGRESS::updateUI()
 {
-    m_fillLog.Drain( m_log );
+    if( m_drainThrottle.Ready() )
+        drainLog();
 
     // Do not flash a window for a fill that is over in a moment.
     if( !IsShown() && std::chrono::steady_clock::now() - m_createdAt > std::chrono::milliseconds( 500 ) )
@@ -196,7 +209,7 @@ bool DIALOG_ZONE_FILL_PROGRESS::FillComplete()
 {
     m_running = false;
 
-    m_fillLog.Drain( m_log );
+    drainLog();
 
     wxString summary = m_fillLog.Summary();
 

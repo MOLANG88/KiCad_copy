@@ -70,6 +70,8 @@ private:
     void onAutoClose( wxCommandEvent& aEvent );
     void onLogLink( wxHtmlLinkEvent& aEvent );
 
+    void drainLog();
+
     void focusOnZone( const KIID& aZoneId, PCB_LAYER_ID aLayer );
 
     PCB_EDIT_FRAME*         m_frame;
@@ -82,6 +84,7 @@ private:
     wxButton*               m_closeButton;
 
     bool                                  m_running;
+    THROTTLE                              m_drainThrottle;
     std::chrono::steady_clock::time_point m_createdAt;
 
     /// A click that arrived mid-fill, honoured once the fill is off the stack.

@@ -64,10 +64,7 @@ REPORTER& WX_HTML_REPORT_BOX::Report( const wxString& aText, SEVERITY aSeverity 
     if( m_immediateMode )
     {
         Flush();
-        int px, py, x, y;
-        GetScrollPixelsPerUnit( &px, &py );
-        GetVirtualSize( &x, &y );
-        Scroll( -1, y * py );
+        ScrollToBottom();
     }
 
     return *this;
@@ -82,13 +79,20 @@ REPORTER& WX_HTML_REPORT_BOX::Report( const KI_ERROR& aError )
     if( m_immediateMode )
     {
         Flush();
-        int px, py, x, y;
-        GetScrollPixelsPerUnit( &px, &py );
-        GetVirtualSize( &x, &y );
-        Scroll( -1, y * py );
+        ScrollToBottom();
     }
 
     return *this;
+}
+
+
+void WX_HTML_REPORT_BOX::ScrollToBottom()
+{
+    int px, py, x, y;
+
+    GetScrollPixelsPerUnit( &px, &py );
+    GetVirtualSize( &x, &y );
+    Scroll( -1, y * py );
 }
 
 
