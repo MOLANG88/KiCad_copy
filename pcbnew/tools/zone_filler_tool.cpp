@@ -310,8 +310,11 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
 
     disabler.reset();
 
+    // True when no window is left on screen, so the canvas should take the keyboard back.
+    bool fillDialogClosed = true;
+
     if( fillDialog )
-        fillDialog->FillComplete();
+        fillDialogClosed = fillDialog->FillComplete();
 
     if( !aHeadless && m_filler->IsDebug() )
         frame->UpdateUserInterface();
@@ -319,10 +322,12 @@ bool ZONE_FILLER_TOOL::FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aRepo
     m_fillInProgress = false;
     m_filler.reset( nullptr );
 
-    if( !aHeadless )
+    if( !aHeadless && fillDialogClosed )
+    {
         // wxWidgets has keyboard focus issues after the progress reporter.  Re-setting the focus
         // here doesn't work, so we delay it to an idle event.
         canvas()->Bind( wxEVT_IDLE, &ZONE_FILLER_TOOL::singleShotRefocus, this );
+    }
 
     return filled;
 }
