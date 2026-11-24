@@ -3286,12 +3286,12 @@ void BOARD_INSPECTION_TOOL::doHideRatsnestNet( int aNetCode, bool aHide )
     else
         rs->GetHiddenNets().erase( aNetCode );
 
-    if( !m_frame->GetAppearancePanel()->IsTogglingNetclassRatsnestVisibility() )
+    m_frame->GetAppearancePanel()->OnNetVisibilityChanged( aNetCode, !aHide );
+
+    if( !m_frame->GetAppearancePanel()->IsBatchNetVisibilityChange() )
     {
         m_frame->GetCanvas()->RedrawRatsnest();
         m_frame->GetCanvas()->Refresh();
-
-        m_frame->GetAppearancePanel()->OnNetVisibilityChanged( aNetCode, !aHide );
     }
 }
 

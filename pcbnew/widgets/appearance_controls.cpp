@@ -433,7 +433,7 @@ APPEARANCE_CONTROLS::APPEARANCE_CONTROLS( PCB_BASE_FRAME* aParent, wxWindow* aFo
         m_currentPreset( nullptr ),
         m_lastSelectedUserPreset( nullptr ),
         m_layerContextMenu( nullptr ),
-        m_togglingNetclassRatsnestVisibility( false )
+        m_batchNetVisibilityChange( false )
 {
     // Correct the min size from wxformbuilder not using fromdip
     SetMinSize( FromDIP( GetMinSize() ) );
@@ -1133,15 +1133,14 @@ void APPEARANCE_CONTROLS::OnBoardNetSettingsChanged( BOARD& aBoard )
 
 void APPEARANCE_CONTROLS::OnNetVisibilityChanged( int aNetCode, bool aVisibility )
 {
-    if( m_togglingNetclassRatsnestVisibility )
-        return;
-
     int row = m_netsTable->GetRowByNetcode( aNetCode );
 
     if( row >= 0 )
     {
         m_netsTable->SetVisibilityState( row, aVisibility );
-        m_netsGrid->ForceRefresh();
+
+        if( !m_batchNetVisibilityChange )
+            m_netsGrid->ForceRefresh();
     }
 }
 
@@ -3391,7 +3390,7 @@ void APPEARANCE_CONTROLS::showNetclass( const wxString& aClassName, bool aShow )
     if( !board )
         return;
 
-    m_togglingNetclassRatsnestVisibility = true;
+    BeginBatchNetVisibilityChange();
 
     for( NETINFO_ITEM* net : board->GetNetInfo() )
     {
@@ -3415,10 +3414,9 @@ void APPEARANCE_CONTROLS::showNetclass( const wxString& aClassName, bool aShow )
     else
         localSettings.m_HiddenNetclasses.erase( aClassName );
 
-    m_netsGrid->ForceRefresh();
+    EndBatchNetVisibilityChange();
     m_frame->GetCanvas()->RedrawRatsnest();
     m_frame->GetCanvas()->Refresh();
-    m_togglingNetclassRatsnestVisibility = false;
 }
 
 
@@ -3709,7 +3707,25 @@ void APPEARANCE_CONTROLS::RefreshCollapsiblePanes()
 }
 
 
-bool APPEARANCE_CONTROLS::IsTogglingNetclassRatsnestVisibility()
+void APPEARANCE_CONTROLS::BeginBatchNetVisibilityChange()
 {
-    return m_togglingNetclassRatsnestVisibility;
+    m_batchNetVisibilityChange = true;
+}
+
+
+void APPEARANCE_CONTROLS::EndBatchNetVisibilityChange()
+{
+    if( !m_batchNetVisibilityChange )
+        return;
+
+    m_batchNetVisibilityChange = false;
+
+    if( m_netsGrid )
+        m_netsGrid->ForceRefresh();
+}
+
+
+bool APPEARANCE_CONTROLS::IsBatchNetVisibilityChange() const
+{
+    return m_batchNetVisibilityChange;
 }

@@ -240,6 +240,13 @@ public:
     /// Notifies the panel when a net has been hidden or shown via the external tool.
     void OnNetVisibilityChanged( int aNetCode, bool aVisibility );
 
+    /// Begin a batch of net ratsnest visibility changes. While active, per-net updates
+    /// skip canvas and grid refreshes; call EndBatchNetVisibilityChange() to apply them once.
+    void BeginBatchNetVisibilityChange();
+
+    /// End a batch started with BeginBatchNetVisibilityChange() and refresh the nets grid once.
+    void EndBatchNetVisibilityChange();
+
     /// Manually update visibility for a given layer
     void SetLayerVisible( int aLayer, bool isVisible );
 
@@ -297,7 +304,7 @@ public:
     bool IsLayerOptionsExpanded();
     bool IsNetOptionsExpanded();
 
-    bool IsTogglingNetclassRatsnestVisibility();
+    bool IsBatchNetVisibilityChange() const;
     bool IsTogglingNetRatsnestVisibility();
 
     void CommonSettingsChanged( int aFlag );
@@ -515,7 +522,7 @@ private:
         ID_LAST_VALUE
     };
 
-    bool m_togglingNetclassRatsnestVisibility;
+    bool m_batchNetVisibilityChange;
 };
 
 #endif
