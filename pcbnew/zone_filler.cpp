@@ -643,7 +643,6 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
     {
         m_progressReporter->Report( aCheck ? _( "Checking zone fills..." )
                                            : _( "Building zone fills..." ) );
-        m_progressReporter->SetMaxProgress( aZones.size() );
         m_progressReporter->KeepRefreshing();
     }
 
@@ -1215,9 +1214,14 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                     std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
             };
 
-    // AdvanceProgress() counts fill items, not zones.
     if( m_progressReporter )
+    {
+        // Building the connectivity left the count where it finished, and the fill counts
+        // fill items rather than zones. Clear it first, as SetCurrentProgress() sets its own
+        // maximum.
+        m_progressReporter->SetCurrentProgress( 0.0 );
         m_progressReporter->SetMaxProgress( toFill.size() );
+    }
 
     run_fill_waves( toFill, fill_lambda, tesselate_lambda, fill_item_dependency, true );
 
