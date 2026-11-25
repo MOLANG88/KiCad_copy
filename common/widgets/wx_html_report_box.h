@@ -51,7 +51,13 @@ public:
      *
      * Required for progress-related reports, but can be very slow for larger reports.
      */
-    void SetImmediateMode() { m_immediateMode = true; }
+    void SetImmediateMode( bool aEnable = true ) { m_immediateMode = aEnable; }
+
+    /**
+     * Scroll to the newest message. Only needed after reporting a batch with immediate mode
+     * off and flushing by hand.
+     */
+    void ScrollToBottom();
 
     /**
      * Build the HTML messages page.

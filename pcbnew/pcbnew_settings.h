@@ -163,6 +163,11 @@ public:
         bool scroll_on_crossprobe;
     };
 
+    struct DIALOG_ZONE_FILL
+    {
+        bool auto_close;
+    };
+
     struct FOOTPRINT_CHOOSER
     {
         // Footprint chooser is a FRAME, so there's no DIALOG_SHIM to save/restore control state
@@ -229,6 +234,7 @@ public:
 
     DIALOG_EXPORT_D356 m_ExportD356;
     DIALOG_DRC         m_DRCDialog;
+    DIALOG_ZONE_FILL   m_ZoneFillDialog;
     FOOTPRINT_CHOOSER  m_FootprintChooser;
 
     WINDOW_SETTINGS    m_FootprintViewer;

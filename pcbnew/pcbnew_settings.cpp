@@ -360,6 +360,8 @@ PCBNEW_SETTINGS::PCBNEW_SETTINGS() :
     m_params.emplace_back( new PARAM<bool>( "DRC.scroll_on_crossprobe",
             &m_DRCDialog.scroll_on_crossprobe, true ) );
 
+    m_params.emplace_back( new PARAM<bool>( "zone_fill.auto_close", &m_ZoneFillDialog.auto_close, true ) );
+
     m_params.emplace_back( new PARAM<COLOR4D>( "diff_phase_skew.zero_color",
             &m_DiffPhaseSkewSettings.m_ZeroSkewColor, COLOR4D( 1.0, 1.0, 1.0, 1.0 ) ) );
 

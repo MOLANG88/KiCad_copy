@@ -22,6 +22,7 @@
 #ifndef ZONE_FILLER_H
 #define ZONE_FILLER_H
 
+#include <functional>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -37,14 +38,31 @@ class FOOTPRINT;
 class SHAPE_LINE_CHAIN;
 
 
+/**
+ * One completed zone fill: which zone, on which layer, and how long the fill took.
+ */
+struct ZONE_FILL_RECORD
+{
+    KIID         m_zoneId;
+    PCB_LAYER_ID m_layer;
+    wxString     m_label;
+    double       m_seconds;
+};
+
+
 class ZONE_FILLER
 {
 public:
+    /// Called from fill worker threads, so the consumer owns the synchronization.
+    using FILL_RECORD_SINK = std::function<void( const ZONE_FILL_RECORD& )>;
+
     ZONE_FILLER( BOARD* aBoard, COMMIT* aCommit );
     ~ZONE_FILLER();
 
     void SetProgressReporter( PROGRESS_REPORTER* aReporter );
     PROGRESS_REPORTER* GetProgressReporter() const { return m_progressReporter; }
+
+    void SetFillRecordSink( FILL_RECORD_SINK aSink ) { m_fillRecordSink = std::move( aSink ); }
 
     /**
      * Fills the given list of zones.
@@ -260,6 +278,7 @@ private:
     bool                  m_brdOutlinesValid;   // true if m_boardOutline is well-formed
     COMMIT*               m_commit;
     PROGRESS_REPORTER*    m_progressReporter;
+    FILL_RECORD_SINK      m_fillRecordSink;
 
     // Rebuilt per fill, then read-only, so the fill workers can share them.
     ITEM_RTREE                         m_graphicIndex;    // fp reference/value/graphics + drawings

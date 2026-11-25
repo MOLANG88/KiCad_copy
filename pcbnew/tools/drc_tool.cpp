@@ -26,6 +26,7 @@
 #include <tools/zone_filler_tool.h>
 #include <tools/pcb_selection_tool.h>
 #include <tools/drc_tool.h>
+#include <zone_filler.h>
 #include <kiface_base.h>
 #include <dialog_drc.h>
 #include <footprint.h>
@@ -161,7 +162,11 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
         {
             aProgressReporter->AdvancePhase( _( "Refilling all zones..." ) );
 
-            zoneFiller->FillAllZones( m_drcDialog, aProgressReporter );
+            zoneFiller->FillAllZones( m_drcDialog, aProgressReporter, false,
+                                      [this]( const ZONE_FILL_RECORD& aRecord )
+                                      {
+                                          m_drcDialog->QueueZoneFillRecord( aRecord );
+                                      } );
         }
 
         m_drcEngine->SetDrawingSheet( m_editFrame->GetCanvas()->GetDrawingSheet() );

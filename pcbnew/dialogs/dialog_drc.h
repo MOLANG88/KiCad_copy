@@ -29,6 +29,7 @@
 #include <pcb_marker.h>
 #include <board.h>
 #include <dialog_drc_base.h>
+#include <zone_fill_log.h>
 #include <widgets/progress_reporter_base.h>
 
 class wxStatusBar;
@@ -70,6 +71,9 @@ public:
 
     void ExcludeMarker();
 
+    /// Called from the fill worker threads.
+    void QueueZoneFillRecord( const ZONE_FILL_RECORD& aRecord );
+
 private:
     int getSeverities();
     void updateDisplayedCounts();
@@ -105,6 +109,11 @@ private:
     void deleteAllMarkers( bool aIncludeExclusions );
     void refreshEditor();
 
+    /// Main thread only.
+    void drainZoneFillLog();
+
+    void focusOnZone( const KIID& aZoneId, PCB_LAYER_ID aLayer );
+
     void installLinkHandlers( wxDataViewCtrl* aCtrl );
     void onDataViewMotion( wxMouseEvent& aEvent );
     void onDataViewLeftUp( wxMouseEvent& aEvent );
@@ -114,6 +123,7 @@ private:
     // PROGRESS_REPORTER calls
     bool updateUI() override;
     void AdvancePhase( const wxString& aMessage ) override;
+    void Report( const wxString& aMessage ) override;
 
     BOARD_DESIGN_SETTINGS& bds() { return m_currentBoard->GetDesignSettings(); }
 
@@ -147,5 +157,8 @@ private:
     wxStatusBar*                          m_drcStatusBar;
     std::chrono::steady_clock::time_point m_drcStartTime;
     int                                   m_lastTickSeconds;
+
+    ZONE_FILL_LOG m_zoneFillLog;
+    THROTTLE      m_zoneFillThrottle;
 };
 

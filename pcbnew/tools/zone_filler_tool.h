@@ -23,6 +23,10 @@
 #ifndef ZONE_FILLER_TOOL_H
 #define ZONE_FILLER_TOOL_H
 
+#include <functional>
+
+#include <wx/weakref.h>
+
 #include <tools/pcb_tool_base.h>
 #include <zone.h>
 
@@ -33,6 +37,8 @@ class WX_PROGRESS_REPORTER;
 class ZONE_FILLER;
 class PCB_GENERATOR;
 class BOARD_COMMIT;
+class DIALOG_ZONE_FILL_PROGRESS;
+struct ZONE_FILL_RECORD;
 
 #define ZONE_FILLER_TOOL_NAME "pcbnew.ZoneFiller"
 
@@ -51,7 +57,8 @@ public:
     void CheckAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aReporter = nullptr );
 
     /// @return true if the fill completed, false if it was cancelled or failed
-    bool FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aReporter = nullptr, bool aHeadless = false );
+    bool FillAllZones( wxWindow* aCaller, PROGRESS_REPORTER* aReporter = nullptr, bool aHeadless = false,
+                       std::function<void( const ZONE_FILL_RECORD& )> aFillRecordSink = nullptr );
 
     /**
      * Run the shared post-fill refresh once a fill commit has been pushed with connectivity
@@ -61,7 +68,7 @@ public:
      * remove-unconnected vias and pads that a plain canvas refresh would leave stale.  Callers
      * with no frame attached (e.g. the headless IPC API handler) must pass true.
      */
-    void PostFillRefresh( bool aHeadless = false );
+    void PostFillRefresh( bool aHeadless = false, PROGRESS_REPORTER* aReporter = nullptr );
 
     int ZoneFill( const TOOL_EVENT& aEvent );
     int ZoneFillAll( const TOOL_EVENT& aEvent );
@@ -89,7 +96,7 @@ private:
     /// Refocus on an idle event (used after the Progress Reporter messes up the focus).
     void singleShotRefocus( wxIdleEvent& );
 
-    void rebuildConnectivity( bool aHeadless = false );
+    void rebuildConnectivity( bool aHeadless = false, PROGRESS_REPORTER* aReporter = nullptr );
     void refresh();
 
     /**
@@ -105,6 +112,9 @@ private:
     bool                         m_fillInProgress;
 
     std::set<KIID>               m_dirtyZoneIDs;
+
+    /// Kept open between fills when the user turned the automatic close off.
+    wxWeakRef<DIALOG_ZONE_FILL_PROGRESS> m_fillDialog;
 };
 
 #endif

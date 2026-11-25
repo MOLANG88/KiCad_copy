@@ -21,11 +21,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <future>
 #include <thread>
 #include <wx/filename.h>
+#include <wx/log.h>
 #include <hash.h>
 #include <mmh3_hash.h>
 #include <set>
@@ -64,6 +66,8 @@
 #include "project.h"
 #include "project/project_local_settings.h"
 #include "pcb_barcode.h"
+
+static const wxChar* const traceZoneFiller = wxT( "KICAD_ZONE_FILLER" );
 
 // Helper classes for connect_nearby_polys
 class RESULTS
@@ -642,7 +646,6 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
     {
         m_progressReporter->Report( aCheck ? _( "Checking zone fills..." )
                                            : _( "Building zone fills..." ) );
-        m_progressReporter->SetMaxProgress( aZones.size() );
         m_progressReporter->KeepRefreshing();
     }
 
@@ -979,6 +982,24 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 return check_fill_dependency( aWaiter.first, aWaiter.second, aDependency.first );
             };
 
+    auto report_fill = [&]( ZONE* aZone, PCB_LAYER_ID aLayer, const std::chrono::steady_clock::time_point& aStart )
+    {
+        if( !m_fillRecordSink )
+            return;
+
+        std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - aStart;
+
+        wxString label = aZone->GetZoneName();
+
+        if( label.IsEmpty() )
+            label = aZone->GetNetname();
+
+        if( label.IsEmpty() )
+            label = _( "No net" );
+
+        m_fillRecordSink( { aZone->m_Uuid, aLayer, label, elapsed.count() } );
+    };
+
     auto fill_lambda =
             [&]( std::pair<ZONE*, PCB_LAYER_ID> aFillItem ) -> int
             {
@@ -1143,6 +1164,10 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 process =
                         [&]( size_t idx )
                         {
+                            // Tessellation is a separate step but the user waits through both,
+                            // so the reported time covers the pair.
+                            auto start = std::chrono::steady_clock::now();
+
                             int filled = aFillFn( aFillItems[idx] );
 
                             // Release dependents; their fills read this one's now-published result.
@@ -1154,6 +1179,9 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
 
                             if( filled != 0 && !cancelled.load() )
                                 aTessFn( aFillItems[idx] );
+
+                            if( filled != 0 )
+                                report_fill( aFillItems[idx].first, aFillItems[idx].second, start );
 
                             remaining.fetch_sub( 1, std::memory_order_acq_rel );
                         };
@@ -1191,6 +1219,15 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 while( inFlight.load( std::memory_order_acquire ) > 0 )
                     std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
             };
+
+    if( m_progressReporter )
+    {
+        // Building the connectivity left the count where it finished, and the fill counts
+        // fill items rather than zones. Clear it first, as SetCurrentProgress() sets its own
+        // maximum.
+        m_progressReporter->SetCurrentProgress( 0.0 );
+        m_progressReporter->SetMaxProgress( toFill.size() );
+    }
 
     run_fill_waves( toFill, fill_lambda, tesselate_lambda, fill_item_dependency, true );
 
@@ -1481,6 +1518,9 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 progressReported = true;
             }
 
+            wxLogTrace( traceZoneFiller, wxT( "Overlap refill pass %d of %d, %d fills" ), iteration + 1,
+                        maxIterations, (int) zonesToRefill.size() );
+
             // Snapshot hashes before the wave for convergence detection.  Only zones in
             // zonesToRefill can change their fill this wave (refill writes them; subsequent
             // island removal also only touches them), so we only need pre-hashes for those.
@@ -1506,6 +1546,7 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                 snapshotLayers.set( layer );
 
             FillSnapshot snapshot;
+            auto         snapshotStart = std::chrono::steady_clock::now();
 
             forEachBoardAndFootprintZone( m_board,
                                           [&]( ZONE* zone )
@@ -1529,6 +1570,11 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
                                               }
                                           } );
 
+            std::chrono::duration<double> snapshotElapsed = std::chrono::steady_clock::now() - snapshotStart;
+
+            wxLogTrace( traceZoneFiller, wxT( "Snapshot for pass %d took %.3f s" ), iteration + 1,
+                        snapshotElapsed.count() );
+
             auto cached_refill_fill_lambda =
                     [&]( const std::pair<ZONE*, PCB_LAYER_ID>& aFillItem ) -> int
                     {
@@ -1541,6 +1587,7 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
 
                         zone->SetFilledPolysList( layer, fillPolys );
                         zone->SetFillFlag( layer, false );
+
                         return 1;
                     };
 
