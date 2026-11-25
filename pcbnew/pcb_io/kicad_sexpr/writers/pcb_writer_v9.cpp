@@ -1132,9 +1132,12 @@ void PCB_WRITER_V9::formatLayers( LSET aLayerMask, bool aEnumerateLayers ) const
     static const LSET crt_yd( { B_CrtYd, F_CrtYd } );
     static const LSET fab( { B_Fab, F_Fab } );
 
-    LSET cu_board_mask = LSET::AllCuMask( m_board ? m_board->GetCopperLayerCount() : MAX_CU_LAYERS );
+    const int  copperLayerCount = m_board ? m_board->GetCopperLayerCount() : KICAD_FORMAT::LEGACY::MAX_COPPER_LAYERS;
+    const LSET cu_board_mask = LSET::AllCuMask( copperLayerCount );
 
     std::string output;
+
+    aLayerMask &= ~cu_all | LSET::AllCuMask( KICAD_FORMAT::LEGACY::MAX_COPPER_LAYERS );
 
     if( !aEnumerateLayers )
     {
@@ -1654,7 +1657,7 @@ void PCB_WRITER_V9::format( const PAD* aPad ) const
         {
             m_out->Print( "(padstack (mode custom)" );
 
-            int layerCount = board ? board->GetCopperLayerCount() : MAX_CU_LAYERS;
+            int layerCount = board ? board->GetCopperLayerCount() : KICAD_FORMAT::LEGACY::MAX_COPPER_LAYERS;
 
             for( PCB_LAYER_ID layer : LAYER_RANGE( F_Cu, B_Cu, layerCount ) )
             {

@@ -26,6 +26,7 @@
 #include <bezier_curves.h>
 #include <convert_basic_shapes_to_polygon.h>
 #include <footprint.h>
+#include <layer_range.h>
 #include <pcb_3d_body.h>
 #include <pcb_textbox.h>
 #include <pcb_table.h>
@@ -159,8 +160,7 @@ EXPORTER_STEP::~EXPORTER_STEP()
 }
 
 
-bool EXPORTER_STEP::isLayerInBackdrillSpan( PCB_LAYER_ID aLayer, PCB_LAYER_ID aStartLayer,
-                                            PCB_LAYER_ID aEndLayer ) const
+bool EXPORTER_STEP::isLayerInBackdrillSpan( PCB_LAYER_ID aLayer, PCB_LAYER_ID aStartLayer, PCB_LAYER_ID aEndLayer )
 {
     if( !IsCopperLayer( aLayer ) )
         return false;
@@ -169,33 +169,8 @@ bool EXPORTER_STEP::isLayerInBackdrillSpan( PCB_LAYER_ID aLayer, PCB_LAYER_ID aS
     if( aLayer == aStartLayer || aLayer == aEndLayer )
         return true;
 
-    // Convert layers to a sortable index for comparison
-    // F_Cu = -1, In1_Cu through In30_Cu = 0-29, B_Cu = MAX_CU_LAYERS (32)
-    auto layerToIndex = []( PCB_LAYER_ID layer ) -> int
-    {
-        if( layer == F_Cu )
-            return -1;
-
-        if( layer == B_Cu )
-            return MAX_CU_LAYERS;
-
-        if( IsInnerCopperLayer( layer ) )
-            return layer - In1_Cu;
-
-        return -2; // Invalid copper layer
-    };
-
-    int startIdx = layerToIndex( aStartLayer );
-    int endIdx = layerToIndex( aEndLayer );
-    int layerIdx = layerToIndex( aLayer );
-
-    if( layerIdx == -2 )
-        return false;
-
-    int minIdx = std::min( startIdx, endIdx );
-    int maxIdx = std::max( startIdx, endIdx );
-
-    return ( layerIdx >= minIdx && layerIdx <= maxIdx );
+    return IsCopperLayer( aStartLayer ) && IsCopperLayer( aEndLayer )
+           && LAYER_RANGE::Contains( aStartLayer, aEndLayer, aLayer );
 }
 
 

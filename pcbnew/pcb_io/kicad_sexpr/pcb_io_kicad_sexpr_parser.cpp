@@ -37,6 +37,7 @@
 #include <board.h>
 #include <board_design_settings.h>
 #include <board_design_settings_defaults.h>
+#include <io/kicad/legacy_format.h>
 #include <component_classes/component_class_manager.h>
 #include <project/net_settings.h>
 #include <embedded_files_parser.h>
@@ -1234,6 +1235,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::ParseFootprintLib(
 
                     int versionNumber = parseInt( "version" );
 
+                    m_containerVersion = versionNumber;
                     m_requiredVersion = versionNumber;
                     m_tooRecent = ( versionNumber > SEXPR_FOOTPRINT_LIB_FILE_VERSION );
                     SetKnowsBar( m_requiredVersion >= 20240706 ); // Bar token is known from this version
@@ -1309,6 +1311,8 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
             };
 
     std::vector<BOARD_ITEM*> bulkAddedItems;
+    DRILL_ASSIGNMENTS        drillAssignments;
+    LSET                     sourceCopperLayers;
     BOARD_ITEM* item = nullptr;
 
     for( token = NextTok();  token != T_RIGHT;  token = NextTok() )
@@ -1371,11 +1375,11 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
             break;
 
         case T_layers:
-            parseLayers();
+            sourceCopperLayers = parseLayers();
             break;
 
         case T_setup:
-            parseSetup();
+            parseSetup( drillAssignments );
             break;
 
         case T_property:
@@ -1595,6 +1599,27 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
             wxString err;
             err.Printf( _( "Unknown token '%s'" ), FromUTF8() );
             THROW_PARSE_ERROR( err, CurSource(), CurLine(), CurLineNumber(), CurOffset() );
+        }
+    }
+
+    // Setup and generated tables may precede the layer list. Only incoming keys use the source format.
+    const LSET legacyCopper = LSET::AllCuMask( KICAD_FORMAT::LEGACY::MAX_COPPER_LAYERS );
+    const bool legacyDrillKeys = m_board->GetFileFormatVersionAtLoad() <= LEGACY_32_COPPER_LAYERS
+                                 && legacyCopper.ContainsAll( sourceCopperLayers );
+    DRILL_SYMBOL_PROFILE& profile = m_board->GetDesignSettings().GetDrillSymbolProfile();
+
+    for( const auto& [key, assignment] : drillAssignments )
+        profile.SetAssignment( legacyDrillKeys ? migrateDrillGroupKey( key ) : key, assignment );
+
+    if( legacyDrillKeys )
+    {
+        for( BOARD_ITEM* incoming : bulkAddedItems )
+        {
+            if( IsGeneratedTableType( incoming->Type() ) )
+            {
+                for( auto& [row, key] : static_cast<PCB_GENERATED_TABLE*>( incoming )->RowKeys() )
+                    key = migrateDrillGroupKey( key );
+            }
         }
     }
 
@@ -1963,6 +1988,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseHeader()
     // Prior to this, bar was a valid string char for unquoted strings.
     SetKnowsBar( m_requiredVersion >= 20240706 );
 
+    m_containerVersion = m_requiredVersion;
     m_board->SetFileFormatVersionAtLoad( m_requiredVersion );
 }
 
@@ -2335,11 +2361,11 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseBoardStackup()
 
         if( type != BS_ITEM_TYPE_UNDEFINED )
         {
-            // A 32-copper-layer board has at most 69 stackup items (32 copper +
-            // 31 dielectric + 6 mask/paste/silk).  Anything far beyond that
-            // indicates a corrupted file.  Parse the item so tokens are consumed
-            // correctly, but don't keep it.
-            static constexpr int MAX_STACKUP_ITEMS = 128;
+            // A full board has at most MAX_CU_LAYERS copper, MAX_CU_LAYERS - 1
+            // dielectric and 6 mask/paste/silk stackup items.  Anything beyond
+            // that indicates a corrupted file.  Parse the item so tokens are
+            // consumed correctly, but don't keep it.
+            static constexpr int MAX_STACKUP_ITEMS = MAX_CU_LAYERS + ( MAX_CU_LAYERS - 1 ) + 6;
 
             itemOwner = std::make_unique<BOARD_STACKUP_ITEM>( type );
             item = itemOwner.get();
@@ -2552,9 +2578,9 @@ void PCB_IO_KICAD_SEXPR_PARSER::createOldLayerMapping( std::unordered_map< std::
 }
 
 
-void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
+LSET PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
 {
-    wxCHECK_RET( CurTok() == T_layers,
+    wxCHECK_MSG( CurTok() == T_layers, LSET(),
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as layers." ) );
 
     T       token;
@@ -2586,51 +2612,70 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
 
     // All Cu layers are parsed, but not the non-cu layers here.
 
+    // We need at least 2 copper layers, at most MAX_CU_LAYERS, and there must be an even
+    // number of them.  Reject the file before any layer is applied to the board.
+    if( cu.size() < 2 || cu.size() > MAX_CU_LAYERS || ( cu.size() % 2 ) != 0 )
+    {
+        wxString err = wxString::Format( _( "%d is not a valid layer count" ), static_cast<int>( cu.size() ) );
+
+        THROW_PARSE_ERROR( err, CurSource(), CurLine(), CurLineNumber(), CurOffset() );
+    }
+
     // The original *.kicad_pcb file format and the inverted
     // Cu stack format both have all the Cu layers first, so use this
     // trick to handle either. The layer number in the (layers ..)
     // s-expression element are ignored.
-    if( cu.size() )
+    // Rework the layer numbers, which changed when the Cu stack
+    // was flipped.  So we instead use position in the list.
+    for( size_t i = 1; i < cu.size() - 1; i++ )
     {
-        // Rework the layer numbers, which changed when the Cu stack
-        // was flipped.  So we instead use position in the list.
-        for( size_t i = 1; i < cu.size() - 1; i++ )
-        {
-            int tmpLayer = LSET::NameToLayer( cu[i].m_name );
+        int tmpLayer = LSET::NameToLayer( cu[i].m_name );
 
-            if( tmpLayer < 0 )
-                tmpLayer = ( i + 1 ) * 2;
+        // NameToLayer derives ids past In62.Cu from the name; fall back to the stack position
+        if( !IsCopperLayer( tmpLayer ) )
+            tmpLayer = ( i + 1 ) * 2;
 
-            cu[i].m_number = tmpLayer;
-        }
-
-        cu[0].m_number = F_Cu;
-        cu[cu.size()-1].m_number = B_Cu;
-
-        for( auto& cu_layer : cu )
-        {
-            enabledLayers.set( cu_layer.m_number );
-
-            if( cu_layer.m_visible )
-                visibleLayers.set( cu_layer.m_number );
-            else
-                anyHidden = true;
-
-            if( !m_preserveDestinationStackup || !m_board->IsLayerEnabled( PCB_LAYER_ID( cu_layer.m_number ) ) )
-            {
-                m_board->SetLayerDescr( PCB_LAYER_ID( cu_layer.m_number ), cu_layer );
-            }
-
-            UTF8 name = cu_layer.m_name;
-
-            m_layerIndices[ name ] = PCB_LAYER_ID( cu_layer.m_number );
-            m_layerMasks[ name ] = LSET( { PCB_LAYER_ID( cu_layer.m_number ) } );
-
-            appendedLayers.push_back( cu_layer );
-        }
-
-        copperLayerCount = cu.size();
+        cu[i].m_number = tmpLayer;
     }
+
+    cu[0].m_number = F_Cu;
+    cu[cu.size() - 1].m_number = B_Cu;
+
+    std::set<wxString> copperNames;
+
+    for( const LAYER& copper : cu )
+    {
+        if( enabledLayers.test( copper.m_number ) || !copperNames.insert( copper.m_name ).second )
+        {
+            wxString err = wxString::Format( _( "Copper layer '%s' has a duplicate name or layer assignment." ),
+                                             copper.m_name );
+            THROW_PARSE_ERROR( err, CurSource(), CurLine(), CurLineNumber(), CurOffset() );
+        }
+
+        enabledLayers.set( copper.m_number );
+    }
+
+    for( auto& cu_layer : cu )
+    {
+        if( cu_layer.m_visible )
+            visibleLayers.set( cu_layer.m_number );
+        else
+            anyHidden = true;
+
+        if( !m_preserveDestinationStackup || !m_board->IsLayerEnabled( PCB_LAYER_ID( cu_layer.m_number ) ) )
+        {
+            m_board->SetLayerDescr( PCB_LAYER_ID( cu_layer.m_number ), cu_layer );
+        }
+
+        UTF8 name = cu_layer.m_name;
+
+        m_layerIndices[name] = PCB_LAYER_ID( cu_layer.m_number );
+        m_layerMasks[name] = LSET( { PCB_LAYER_ID( cu_layer.m_number ) } );
+
+        appendedLayers.push_back( cu_layer );
+    }
+
+    copperLayerCount = cu.size();
 
     // process non-copper layers
     while( token != T_RIGHT )
@@ -2678,14 +2723,6 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
         parseLayer( &layer );
     }
 
-    // We need at least 2 copper layers and there must be an even number of them.
-    if( copperLayerCount < 2 || (copperLayerCount % 2) != 0 )
-    {
-        wxString err = wxString::Format( _( "%d is not a valid layer count" ), copperLayerCount );
-
-        THROW_PARSE_ERROR( err, CurSource(), CurLine(), CurLineNumber(), CurOffset() );
-    }
-
     if( m_preserveDestinationStackup )
     {
         m_board->SetCopperLayerCount( std::max( copperLayerCount, m_board->GetCopperLayerCount() ) );
@@ -2704,6 +2741,8 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
 
     if( m_appendToExisting && m_layerMappingHandler )
         remapAppendedLayers( appendedLayers, destInitialEnabled, destInitialCopperCount );
+
+    return enabledLayers & LSET::AllCuMask();
 }
 
 
@@ -2856,16 +2895,28 @@ PCB_LAYER_ID PCB_IO_KICAD_SEXPR_PARSER::parseBoardItemLayer()
 }
 
 
-LSET PCB_IO_KICAD_SEXPR_PARSER::parseBoardItemLayersAsMask()
+LSET PCB_IO_KICAD_SEXPR_PARSER::parseBoardItemLayersAsMask( LSET* aHighWildcardLayers )
 {
     wxCHECK_MSG( CurTok() == T_layers, LSET(),
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as item layers." ) );
 
     LSET layerMask;
+    LSET namedLayers;
 
     for( T token = NextTok();  token != T_RIGHT;  token = NextTok() )
     {
-        layerMask |= lookUpLayerSet( m_layerMasks );
+        const LSET layers = lookUpLayerSet( m_layerMasks );
+        layerMask |= layers;
+
+        if( aHighWildcardLayers && curText != "*.Cu" && curText != "*In.Cu" )
+            namedLayers |= layers;
+    }
+
+    if( aHighWildcardLayers )
+    {
+        const LSET highCopper = LSET::AllCuMask()
+                                & ~LSET::AllCuMask( KICAD_FORMAT::LEGACY::MAX_COPPER_LAYERS );
+        *aHighWildcardLayers = layerMask & highCopper & ~namedLayers;
     }
 
     return layerMask;
@@ -2898,7 +2949,44 @@ LSET PCB_IO_KICAD_SEXPR_PARSER::parseLayersForCuItemWithSoldermask()
 }
 
 
-void PCB_IO_KICAD_SEXPR_PARSER::parseDrillSymbolProfile()
+std::string PCB_IO_KICAD_SEXPR_PARSER::migrateDrillGroupKey( const std::string& aKey )
+{
+    // The span field is "L<top>-<bottom>" in copper ordinals, and B_Cu's ordinal follows
+    // MAX_CU_LAYERS.  No inner layer had ordinal 31, so 31 can only be B_Cu.
+    static const std::string oldBottom = "31";
+    static const std::string newBottom = std::to_string( CopperLayerToOrdinal( B_Cu ) );
+
+    std::string key;
+    size_t      start = 0;
+
+    while( start <= aKey.size() )
+    {
+        size_t      end = aKey.find( '|', start );
+        std::string field = aKey.substr( start, end == std::string::npos ? std::string::npos : end - start );
+        size_t      dash = field.find( '-' );
+
+        if( field.starts_with( 'L' ) && dash != std::string::npos )
+        {
+            std::string top = field.substr( 1, dash - 1 );
+            std::string bottom = field.substr( dash + 1 );
+
+            field = "L" + ( top == oldBottom ? newBottom : top ) + "-" + ( bottom == oldBottom ? newBottom : bottom );
+        }
+
+        key += field;
+
+        if( end == std::string::npos )
+            break;
+
+        key += '|';
+        start = end + 1;
+    }
+
+    return key;
+}
+
+
+void PCB_IO_KICAD_SEXPR_PARSER::parseDrillSymbolProfile( DRILL_ASSIGNMENTS& aAssignments )
 {
     wxCHECK_RET( CurTok() == T_drill_symbol_profile,
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as a drill symbol profile." ) );
@@ -3019,7 +3107,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseDrillSymbolProfile()
             }
 
             if( !key.empty() )
-                profile.SetAssignment( key, assignment );
+                aAssignments.emplace_back( std::move( key ), std::move( assignment ) );
 
             break;
         }
@@ -3032,7 +3120,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseDrillSymbolProfile()
 }
 
 
-void PCB_IO_KICAD_SEXPR_PARSER::parseSetup()
+void PCB_IO_KICAD_SEXPR_PARSER::parseSetup( DRILL_ASSIGNMENTS& aAssignments )
 {
     wxCHECK_RET( CurTok() == T_setup,
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as setup." ) );
@@ -3055,7 +3143,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseSetup()
         switch( token )
         {
         case T_drill_symbol_profile:
-            parseDrillSymbolProfile();
+            parseDrillSymbolProfile( aAssignments );
             break;
 
         case T_stackup:
@@ -6263,6 +6351,7 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
     double   parsedScaleY = 1.0;
 
     std::unique_ptr<FOOTPRINT> footprint = std::make_unique<FOOTPRINT>( m_board );
+    std::vector<std::pair<ZONE*, LSET>> wildcardZones;
 
     footprint->SetInitialComments( aInitialComments );
 
@@ -7093,7 +7182,8 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
 
         case T_zone:
         {
-            ZONE* zone = parseZONE( footprint.get() );
+            LSET  highWildcardLayers;
+            ZONE* zone = parseZONE( footprint.get(), &highWildcardLayers );
 
             if( zone->GetNumCorners() == 0 )
             {
@@ -7116,6 +7206,9 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
             }
 
             footprint->Add( zone, ADD_MODE::APPEND, true );
+            if( highWildcardLayers.any() && !zone->GetIsRuleArea() )
+                wildcardZones.emplace_back( zone, highWildcardLayers );
+
             break;
         }
 
@@ -7215,6 +7308,29 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
                        "fp_line, fp_poly, fp_rect, fp_text, pad, group, generator, model, path, "
                        "solder_mask_margin, solder_paste_margin, solder_paste_margin_ratio, tags, "
                        "thermal_gap, version, zone, zone_connect, component_classes, or custom_property" );
+        }
+    }
+
+    // A footprint can declare its own version after its zones.
+    const int version = footprint->GetFileFormatVersionAtLoad() ? footprint->GetFileFormatVersionAtLoad()
+                                                               : m_containerVersion;
+
+    if( version <= LEGACY_32_COPPER_LAYERS )
+    {
+        for( const auto& [zone, wildcardLayers] : wildcardZones )
+        {
+            LSET       layers = zone->GetLayerSet();
+            const LSET candidates = wildcardLayers & layers;
+
+            for( PCB_LAYER_ID layer : candidates )
+            {
+                const SHAPE_POLY_SET* fill = zone->GetFill( layer );
+
+                if( !fill || fill->IsEmpty() )
+                    layers.reset( layer );
+            }
+
+            zone->SetLayerSetAndRemoveUnusedFills( layers );
         }
     }
 
@@ -7526,90 +7642,12 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
         }
 
         case T_backdrill:
-        {
-            // Parse: (backdrill (size ...) (layers start end))
-            PADSTACK::DRILL_PROPS& secondary = pad->Padstack().SecondaryDrill();
-
-            for( token = NextTok(); token != T_RIGHT; token = NextTok() )
-            {
-                if( token != T_LEFT )
-                    Expecting( T_LEFT );
-
-                token = NextTok();
-
-                switch( token )
-                {
-                case T_size:
-                {
-                    int size = parseBoardUnits( "backdrill size" );
-                    secondary.size = VECTOR2I( size, size );
-                    NeedRIGHT();
-                    break;
-                }
-
-                case T_layers:
-                {
-                    NextTok();
-                    secondary.start = lookUpLayer( m_layerIndices, true );
-                    NextTok();
-                    secondary.end = lookUpLayer( m_layerIndices, true );
-                    NeedRIGHT();
-                    break;
-                }
-
-                default:
-                    Expecting( "size or layers" );
-                }
-            }
-
-            if( secondary.start == UNDEFINED_LAYER )
-                secondary.size = VECTOR2I( 0, 0 );
-
+            parseAuxiliaryDrill( pad->Padstack().SecondaryDrill() );
             break;
-        }
 
         case T_tertiary_drill:
-        {
-            // Parse: (tertiary_drill (size ...) (layers start end))
-            PADSTACK::DRILL_PROPS& tertiary = pad->Padstack().TertiaryDrill();
-
-            for( token = NextTok(); token != T_RIGHT; token = NextTok() )
-            {
-                if( token != T_LEFT )
-                    Expecting( T_LEFT );
-
-                token = NextTok();
-
-                switch( token )
-                {
-                case T_size:
-                {
-                    int size = parseBoardUnits( "tertiary drill size" );
-                    tertiary.size = VECTOR2I( size, size );
-                    NeedRIGHT();
-                    break;
-                }
-
-                case T_layers:
-                {
-                    NextTok();
-                    tertiary.start = lookUpLayer( m_layerIndices, true );
-                    NextTok();
-                    tertiary.end = lookUpLayer( m_layerIndices, true );
-                    NeedRIGHT();
-                    break;
-                }
-
-                default:
-                    Expecting( "size or layers" );
-                }
-            }
-
-            if( tertiary.start == UNDEFINED_LAYER )
-                tertiary.size = VECTOR2I( 0, 0 );
-
+            parseAuxiliaryDrill( pad->Padstack().TertiaryDrill() );
             break;
-        }
 
         case T_layers:
         {
@@ -8120,6 +8158,43 @@ void PCB_IO_KICAD_SEXPR_PARSER::parsePAD_option( PAD* aPad, PCB_LAYER_ID aLayer 
             break;
         }
     }
+}
+
+
+void PCB_IO_KICAD_SEXPR_PARSER::parseAuxiliaryDrill( PADSTACK::DRILL_PROPS& aDrill )
+{
+    const char* sizeField = CurTok() == T_backdrill ? "backdrill size" : "tertiary drill size";
+
+    for( T token = NextTok(); token != T_RIGHT; token = NextTok() )
+    {
+        if( token != T_LEFT )
+            Expecting( T_LEFT );
+
+        switch( NextTok() )
+        {
+        case T_size:
+        {
+            int size = parseBoardUnits( sizeField );
+            aDrill.size = VECTOR2I( size, size );
+            break;
+        }
+
+        case T_layers:
+            NextTok();
+            aDrill.start = lookUpLayer( m_layerIndices, true );
+            NextTok();
+            aDrill.end = lookUpLayer( m_layerIndices, true );
+            break;
+
+        default:
+            Expecting( "size or layers" );
+        }
+
+        NeedRIGHT();
+    }
+
+    if( aDrill.start == UNDEFINED_LAYER )
+        aDrill.size = VECTOR2I( 0, 0 );
 }
 
 
@@ -9170,6 +9245,8 @@ PCB_VIA* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_VIA()
 
     VECTOR2I                 pt;
     std::unique_ptr<PCB_VIA> via = std::make_unique<PCB_VIA>( m_board );
+    PADSTACK::DRILL_PROPS    secondaryDrill;
+    PADSTACK::DRILL_PROPS    tertiaryDrill;
 
     // NB: all pre-padstack tokens are stored into the F_Cu layer.  For PADSTACK::MODE::NORMAL
     // this will be all there is.  For complex padstacks, the other values will get loaded from the
@@ -9357,90 +9434,12 @@ PCB_VIA* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_VIA()
             break;
 
         case T_backdrill:
-        {
-            // Parse: (backdrill (size ...) (layers start end))
-            PADSTACK::DRILL_PROPS& secondary = via->Padstack().SecondaryDrill();
-
-            for( token = NextTok(); token != T_RIGHT; token = NextTok() )
-            {
-                if( token != T_LEFT )
-                    Expecting( T_LEFT );
-
-                token = NextTok();
-
-                switch( token )
-                {
-                case T_size:
-                {
-                    int size = parseBoardUnits( "backdrill size" );
-                    secondary.size = VECTOR2I( size, size );
-                    NeedRIGHT();
-                    break;
-                }
-
-                case T_layers:
-                {
-                    NextTok();
-                    secondary.start = lookUpLayer( m_layerIndices, true );
-                    NextTok();
-                    secondary.end = lookUpLayer( m_layerIndices, true );
-                    NeedRIGHT();
-                    break;
-                }
-
-                default:
-                    Expecting( "size or layers" );
-                }
-            }
-
-            if( secondary.start == UNDEFINED_LAYER )
-                secondary.size = VECTOR2I( 0, 0 );
-
+            parseAuxiliaryDrill( secondaryDrill );
             break;
-        }
 
         case T_tertiary_drill:
-        {
-            // Parse: (tertiary_drill (size ...) (layers start end))
-            PADSTACK::DRILL_PROPS& tertiary = via->Padstack().TertiaryDrill();
-
-            for( token = NextTok(); token != T_RIGHT; token = NextTok() )
-            {
-                if( token != T_LEFT )
-                    Expecting( T_LEFT );
-
-                token = NextTok();
-
-                switch( token )
-                {
-                case T_size:
-                {
-                    int size = parseBoardUnits( "tertiary drill size" );
-                    tertiary.size = VECTOR2I( size, size );
-                    NeedRIGHT();
-                    break;
-                }
-
-                case T_layers:
-                {
-                    NextTok();
-                    tertiary.start = lookUpLayer( m_layerIndices, true );
-                    NextTok();
-                    tertiary.end = lookUpLayer( m_layerIndices, true );
-                    NeedRIGHT();
-                    break;
-                }
-
-                default:
-                    Expecting( "size or layers" );
-                }
-            }
-
-            if( tertiary.start == UNDEFINED_LAYER )
-                tertiary.size = VECTOR2I( 0, 0 );
-
+            parseAuxiliaryDrill( tertiaryDrill );
             break;
-        }
 
         case T_front_post_machining:
             parsePostMachining( via->Padstack().FrontPostMachining() );
@@ -9460,6 +9459,21 @@ PCB_VIA* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_VIA()
         }
     }
 
+    // Setting the primary layer pair clears drill endpoints on disabled copper layers.
+    for( PADSTACK::DRILL_PROPS* drill : { &secondaryDrill, &tertiaryDrill } )
+    {
+        if( !IsCopperLayer( drill->start ) )
+            drill->start = UNDEFINED_LAYER;
+
+        if( !IsCopperLayer( drill->end ) )
+        {
+            drill->end = UNDEFINED_LAYER;
+            drill->size = VECTOR2I( 0, 0 );
+        }
+    }
+
+    via->Padstack().SecondaryDrill() = secondaryDrill;
+    via->Padstack().TertiaryDrill() = tertiaryDrill;
     return via.release();
 }
 
@@ -9611,7 +9625,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseViastack( PCB_VIA* aVia )
 }
 
 
-ZONE* PCB_IO_KICAD_SEXPR_PARSER::parseZONE( BOARD_ITEM_CONTAINER* aParent )
+ZONE* PCB_IO_KICAD_SEXPR_PARSER::parseZONE( BOARD_ITEM_CONTAINER* aParent, LSET* aHighWildcardLayers )
 {
     wxCHECK_MSG( CurTok() == T_zone, nullptr,
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as ZONE." ) );
@@ -9674,12 +9688,15 @@ ZONE* PCB_IO_KICAD_SEXPR_PARSER::parseZONE( BOARD_ITEM_CONTAINER* aParent )
             break;
 
         case T_layer:   // keyword for zones that are on only one layer
+            if( aHighWildcardLayers )
+                aHighWildcardLayers->reset();
+
             zone->SetLayer( parseBoardItemLayer() );
             NeedRIGHT();
             break;
 
         case T_layers:  // keyword for zones that can live on a set of layers
-            zone->SetLayerSet( parseBoardItemLayersAsMask() );
+            zone->SetLayerSet( parseBoardItemLayersAsMask( aHighWildcardLayers ) );
             break;
 
         case T_property:

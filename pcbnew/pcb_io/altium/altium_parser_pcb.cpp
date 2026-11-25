@@ -1245,10 +1245,10 @@ APAD6::APAD6( ALTIUM_BINARY_PARSER& aReader )
         sizeAndShape = std::make_unique<APAD6_SIZE_AND_SHAPE>();
 
         for( wxSize& size : sizeAndShape->inner_size )
-            size.x = aReader.ReadKicadUnitX();
+            size.x = aReader.ReadKicadUnit();
 
         for( wxSize& size : sizeAndShape->inner_size )
-            size.y = aReader.ReadKicadUnitY();
+            size.y = aReader.ReadKicadUnit();
 
         for( ALTIUM_PAD_SHAPE& shape : sizeAndShape->inner_shape )
             shape = static_cast<ALTIUM_PAD_SHAPE>( aReader.Read<uint8_t>() );

@@ -48,6 +48,7 @@ namespace KICAD_FORMAT::LEGACY
 // Only primitive quoting and number conversion are shared with the current implementation.
 
 inline constexpr int OMIT_HIDE = 1 << 6;
+inline constexpr int MAX_COPPER_LAYERS = 32;
 
 
 inline bool IsDefaultTextV10( const EDA_TEXT& aText )

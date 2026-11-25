@@ -80,6 +80,7 @@ class PCB_GRID_ITEM;
 class PCB_VIA;
 class ZONE;
 struct ZONE_LAYER_PROPERTIES;
+struct DRILL_SYMBOL_ASSIGNMENT;
 class PCB_BARCODE;
 class FP_3DMODEL;
 class SHAPE_LINE_CHAIN;
@@ -281,7 +282,8 @@ private:
     void parsePAGE_INFO();
     void parseTITLE_BLOCK();
 
-    void parseLayers();
+    /// Return the source copper layers before combining them with an append destination.
+    LSET parseLayers();
 
     /// Remap the appended layers onto the destination using m_layerMappingHandler, on mismatch.
     void remapAppendedLayers( const std::vector<LAYER>& aSourceLayers, const LSET& aDestInitialEnabled,
@@ -290,9 +292,14 @@ private:
 
     void parseBoardStackup();
 
-    void parseSetup();
+    using DRILL_ASSIGNMENTS = std::vector<std::pair<std::string, DRILL_SYMBOL_ASSIGNMENT>>;
 
-    void parseDrillSymbolProfile();
+    void parseSetup( DRILL_ASSIGNMENTS& aAssignments );
+
+    void parseDrillSymbolProfile( DRILL_ASSIGNMENTS& aAssignments );
+
+    /// Update the B_Cu ordinal in a drill group key written with at most 32 copper layers.
+    static std::string migrateDrillGroupKey( const std::string& aKey );
     void parseDefaults( BOARD_DESIGN_SETTINGS& aSettings );
     void parseDefaultTextDims( BOARD_DESIGN_SETTINGS& aSettings, int aLayer );
     void parseNETINFO_ITEM();
@@ -352,6 +359,7 @@ private:
     PAD*        parsePAD( FOOTPRINT* aParent = nullptr );
     void        parsePAD_primitives( PAD* aPad, PCB_LAYER_ID aLayer );
     void        parsePAD_option( PAD* aPad, PCB_LAYER_ID aLayer );
+    void        parseAuxiliaryDrill( PADSTACK::DRILL_PROPS& aDrill );
     void        parsePostMachining( PADSTACK::POST_MACHINING_PROPS& aProps );
     void        parsePadstack( PAD* aPad );
 
@@ -359,7 +367,7 @@ private:
     PCB_TRACK*     parsePCB_TRACK();
     PCB_VIA*       parsePCB_VIA();
     void           parseViastack( PCB_VIA* aVia );
-    ZONE*          parseZONE( BOARD_ITEM_CONTAINER* aParent );
+    ZONE*          parseZONE( BOARD_ITEM_CONTAINER* aParent, LSET* aHighWildcardLayers = nullptr );
     PCB_TARGET*    parsePCB_TARGET();
     PCB_POINT*     parsePCB_POINT();
     PCB_GRID_ITEM* parsePCB_GRID_ITEM();
@@ -400,7 +408,7 @@ private:
      * @throw IO_ERROR if any of the layers is not valid.
      * @throw PARSE_ERROR if the layers syntax is incorrect.
      */
-    LSET parseBoardItemLayersAsMask();
+    LSET parseBoardItemLayersAsMask( LSET* aHighWildcardLayers = nullptr );
 
      /**
      * Parse the layers definition of a #BOARD_ITEM object
@@ -552,6 +560,7 @@ private:
     std::vector<int>    m_netCodes;         ///< net codes mapping for boards being loaded
     bool                m_tooRecent;        ///< true if version parses as later than supported
     int                 m_requiredVersion;  ///< set to the KiCad format version this board requires
+    int                 m_containerVersion = 0; ///< board or library header, independent of nested footprints
     wxString            m_generatorVersion; ///< Set to the generator version this board requires
     bool                m_appendToExisting; ///< reading into an existing board; reset UUIDs
     bool                m_preserveDestinationStackup; ///< append keeps destination stackup

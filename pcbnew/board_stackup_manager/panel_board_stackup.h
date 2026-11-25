@@ -195,8 +195,9 @@ private:
     /**
      * Set the widths of dielectric layers to sensible defaults
      * @param targetThickness target thickness of PCB in IU
+     * @param aFallbackThickness dielectric thickness in IU when the target leaves less than 1 IU per layer
      */
-    void setDefaultLayerWidths( int targetThickness );
+    void setDefaultLayerWidths( int targetThickness, int aFallbackThickness );
 
     void onColorSelected( wxCommandEvent& event );
     void onMaterialChange( wxCommandEvent& event );

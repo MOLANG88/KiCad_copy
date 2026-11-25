@@ -31,6 +31,7 @@
 #include <connectivity/connectivity_data.h>
 #include <drc/drc_engine.h>
 #include <drc/drc_item.h>
+#include <exporters/step/exporter_step.h>
 #include <footprint.h>
 #include <netclass.h>
 #include <pad.h>
@@ -39,6 +40,15 @@
 #include <settings/settings_manager.h>
 #include <zone.h>
 #include <zone_filler.h>
+
+
+struct STEP_BACKDRILL_TEST_FIXTURE
+{
+    static bool isLayerInBackdrillSpan( PCB_LAYER_ID aLayer, PCB_LAYER_ID aStartLayer, PCB_LAYER_ID aEndLayer )
+    {
+        return EXPORTER_STEP::isLayerInBackdrillSpan( aLayer, aStartLayer, aEndLayer );
+    }
+};
 
 
 struct BACKDRILL_TEST_FIXTURE
@@ -268,6 +278,14 @@ struct BACKDRILL_TEST_FIXTURE
 
     std::unique_ptr<BOARD> m_board;
 };
+
+
+BOOST_AUTO_TEST_CASE( StepExporterBackdrillSpanUsesCopperOrder )
+{
+    // A span from B_Cu up to In24_Cu covers In30_Cu but not In23_Cu
+    BOOST_CHECK( !STEP_BACKDRILL_TEST_FIXTURE::isLayerInBackdrillSpan( In23_Cu, B_Cu, In24_Cu ) );
+    BOOST_CHECK( STEP_BACKDRILL_TEST_FIXTURE::isLayerInBackdrillSpan( In30_Cu, B_Cu, In24_Cu ) );
+}
 
 
 /**

@@ -41,6 +41,8 @@
 #include <json_common.h>
 #include <core/map_helpers.h>
 
+#include <algorithm>
+
 
 PCB_IO_EASYEDA::PCB_IO_EASYEDA() : PCB_IO( wxS( "EasyEDA (JLCEDA) Standard" ) )
 {
@@ -179,7 +181,7 @@ void PCB_IO_EASYEDA::loadBoard( const wxString& aFileName, BOARD& aBoard, bool a
             bool          enabled = parts[5] != wxS( "false" );
 
             if( layerId >= innerStart && layerId <= innerEnd && enabled )
-                maxLayer = layerId + 1;
+                maxLayer = std::max( maxLayer, layerId + 1 );
 
             layerNames[parser.LayerToKi( parts[0] )] = layerName;
         }
