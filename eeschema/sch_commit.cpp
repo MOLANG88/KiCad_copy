@@ -31,6 +31,7 @@
 
 #include <sch_group.h>
 #include <sch_screen.h>
+#include <sch_sheet_pin.h>
 #include <schematic.h>
 
 #include <view/view.h>
@@ -860,6 +861,18 @@ void SCH_COMMIT::RevertToCheckpoint( int aCheckpoint )
                 SCH_SHEET_PATH sheet = sheets.FindSheetForScreen( screen );
 
                 for( SCH_PIN* pin : symbolCopy->GetPins( &sheet ) )
+                    graph->RemoveItem( pin );
+            }
+            else if( item->Type() == SCH_SHEET_T )
+            {
+                // After SwapItemData() above the copy owns the original sheet pins, which the
+                // connection graph may still reference. Purge them before deleting the copy.
+                CONNECTION_GRAPH* graph = schematic->ConnectionGraph();
+
+                SCH_SHEET* sheetCopy = static_cast<SCH_SHEET*>( copy );
+                graph->RemoveItem( sheetCopy );
+
+                for( SCH_SHEET_PIN* pin : sheetCopy->GetPins() )
                     graph->RemoveItem( pin );
             }
 
